@@ -1,0 +1,9 @@
+{
+  "appId": "com.xianxia.rpg",
+  "appName": "玄霄问道录",
+  "webDir": "dist",
+  "bundledWebRuntime": false,
+  "server": {
+    "androidScheme": "https"
+  }
+}
