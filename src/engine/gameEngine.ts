@@ -1,6 +1,7 @@
 import { REALMS, SPIRIT_ROOTS } from '../data/realms';
 import { findDestinyTrait } from '../data/destinies';
-import { MAX_BIRTH_TRAITS } from './birth';
+import { equippedSchools } from '../data/worldSandbox';
+import { MAX_BIRTH_TRAITS, rollCraftTalents } from './birth';
 import {
   AffectionStage,
   BattleLogLine,
@@ -45,7 +46,8 @@ export function getAffectionStage(affection: number): {
 export function createInitialPlayer(
   daoName: string,
   spiritRoot: SpiritRootType,
-  traitIds: string[]
+  traitIds: string[],
+  craftTalents = rollCraftTalents(),
 ): PlayerState {
   const root = SPIRIT_ROOTS.find((r) => r.id === spiritRoot) ?? SPIRIT_ROOTS[0];
   const realm = REALMS[0];
@@ -77,6 +79,7 @@ export function createInitialPlayer(
     daoName: daoName.trim() || '林玄',
     spiritRoot,
     destinyTraits: traits.map((t) => t.id),
+    craftTalents: { ...craftTalents },
     realmIndex: 0,
     exp: 0,
     ageMonths: 16 * 12,
@@ -119,13 +122,14 @@ export function createInitialCharacters(
   for (const c of characters) {
     map[c.id] = {
       id: c.id,
-      met: true,
-      affection: 18,
+      met: false,
+      hasContact: false,
+      affection: 0,
       emotion: 'normal',
       isSoulmate: false,
       interactionCount: 0,
       dualCount: 0,
-      lastSpokenLine: c.dialogues.stranger[0] ?? '“道友有礼。”',
+      lastSpokenLine: '',
     };
   }
   return map;
@@ -152,12 +156,14 @@ export function getEffectiveCultivationMult(
     }
   }
 
+  for (const bond of equippedSchools(player.equippedSkills, skills).active) mult += bond.cultivationBonus;
   return mult;
 }
 
 export function getEffectiveCombatStats(
   player: PlayerState,
-  skills: SkillTag[]
+  skills: SkillTag[],
+  bonds = equippedSchools(player.equippedSkills, skills).active,
 ): { atk: number; def: number; critRate: number } {
   let atkPct = 0;
   let defPct = 0;
@@ -171,6 +177,11 @@ export function getEffectiveCombatStats(
   }
 
   const injuryPenalty = Math.max(0.55, 1 - player.injury * 0.0045);
+  for (const bond of bonds) {
+    atkPct += bond.atkMult;
+    defPct += bond.defMult;
+    critBonus += bond.critBonus;
+  }
   return {
     atk: Math.round(player.atk * (1 + atkPct) * injuryPenalty),
     def: Math.round(player.def * (1 + defPct) * injuryPenalty),
@@ -199,6 +210,16 @@ export function advanceTime(player: PlayerState, months: number): PlayerState {
   };
 }
 
+export function cultivationPerDay(player: PlayerState, skills: SkillTag[], spiritDensity: number) {
+  const injuryFactor = Math.max(0.5, 1 - player.injury * 0.006);
+  return (34 + player.realmIndex * 22) * getEffectiveCultivationMult(player, skills) * injuryFactor * spiritDensity / 90;
+}
+
+export function daysToBottleneck(player: PlayerState, skills: SkillTag[], spiritDensity: number) {
+  const remaining = REALMS[player.realmIndex].maxExp - player.exp;
+  return Math.max(0, Math.ceil((remaining - 0.5) / cultivationPerDay(player, skills, spiritDensity)));
+}
+
 export function cultivate(
   player: PlayerState,
   realms: RealmConfig[],
@@ -207,11 +228,8 @@ export function cultivate(
   spiritDensity: number,
 ): { nextPlayer: PlayerState; expGained: number } {
   const realm = realms[player.realmIndex] ?? realms[realms.length - 1];
-  const mult = getEffectiveCultivationMult(player, skills);
-  const baseGain = 34 + player.realmIndex * 22;
-  const injuryFactor = Math.max(0.5, 1 - player.injury * 0.006);
   const fraction = days / 90;
-  const gain = Math.round(baseGain * mult * injuryFactor * fraction * spiritDensity);
+  const gain = Math.round(cultivationPerDay(player, skills, spiritDensity) * days);
   const expGained = Math.max(0, Math.min(gain, realm.maxExp - player.exp));
   const hpHeal = Math.round(player.maxHp * 0.16 * fraction);
   const mpHeal = Math.round(player.maxMp * 0.35 * fraction);
@@ -272,6 +290,15 @@ export function calculateBreakthroughRate(
   return Math.max(5, Math.min(96, rate));
 }
 
+export function breakthroughSetback(player: PlayerState, realm: RealmConfig, protectedHeart: boolean) {
+  const factor = protectedHeart ? 0.5 : 1;
+  const hpLoss = Math.min(Math.max(0, player.hp - 1), Math.round(player.maxHp * realm.failureHpPenaltyPct * factor));
+  const years = Math.max(1, Math.round(realm.failureLifespanPenaltyYears * factor));
+  const lifespanLoss = Math.min(years, Math.max(0, player.lifespanCapYears - Math.ceil(player.ageMonths / 12) - 1));
+  return { hpLoss, lifespanLoss, exp: Math.round(realm.maxExp * 0.55),
+    injury: Math.max(player.injury, Math.min(85, player.injury + Math.round(22 * factor))) };
+}
+
 export function attemptBreakthrough(
   player: PlayerState,
   realms: RealmConfig[],
@@ -299,6 +326,8 @@ export function attemptBreakthrough(
   const recPill = getRecommendedBreakthroughPill(currentRealm);
   const hasMainPill = (player.inventory[recPill.pillId] ?? 0) > 0;
   const actualUseMain = useMainPill && hasMainPill;
+  useHeartGuardPill = useHeartGuardPill && (player.inventory.heart_guard_pill ?? 0) > 0;
+  spendLuck = spendLuck && player.luck >= 9;
 
   const rate = calculateBreakthroughRate(
     player,
@@ -364,24 +393,15 @@ export function attemptBreakthrough(
     };
   }
 
-  const penaltyMult = useHeartGuardPill ? 0.5 : 1;
-  const hpLoss = Math.round(player.maxHp * currentRealm.failureHpPenaltyPct * penaltyMult);
-  const lifespanLoss = Math.max(
-    1,
-    Math.round(currentRealm.failureLifespanPenaltyYears * penaltyMult)
-  );
-  const nextHp = Math.max(1, player.hp - hpLoss);
-  const nextLifespan = Math.max(
-    Math.ceil(player.ageMonths / 12) + 1,
-    player.lifespanCapYears - lifespanLoss
-  );
+  const setback = breakthroughSetback(player, currentRealm, useHeartGuardPill);
+  const { hpLoss, lifespanLoss } = setback;
 
   let updated: PlayerState = {
     ...player,
-    exp: Math.round(currentRealm.maxExp * 0.55),
-    hp: nextHp,
-    injury: Math.min(85, player.injury + Math.round(22 * penaltyMult)),
-    lifespanCapYears: nextLifespan,
+    exp: setback.exp,
+    hp: player.hp - hpLoss,
+    injury: setback.injury,
+    lifespanCapYears: player.lifespanCapYears - lifespanLoss,
     luck: nextLuck,
     nextBreakthroughBonus: 0,
     inventory,
@@ -403,15 +423,20 @@ export function attemptBreakthrough(
 export function filterAvailableEvents(
   events: GameEvent[],
   player: PlayerState,
-  charStates: Record<string, CharacterRuntimeState>
+  charStates: Record<string, CharacterRuntimeState>,
+  regionId?: string,
+  clearedSites: readonly string[] = [],
 ): GameEvent[] {
   return events.filter((evt) => {
+    if (regionId && evt.regionId && evt.regionId !== regionId) return false;
+    if (clearedSites.includes(evt.id)) return false;
     if (evt.minRealmIndex !== undefined && player.realmIndex < evt.minRealmIndex) {
       return false;
     }
     if (evt.maxRealmIndex !== undefined && player.realmIndex > evt.maxRealmIndex) {
       return false;
     }
+    if (evt.requiredPartners?.some((id) => !charStates[id]?.isSoulmate)) return false;
     if (evt.requiredCharId) {
       const cState = charStates[evt.requiredCharId];
       if (!cState || !cState.met) return false;
@@ -530,6 +555,30 @@ export function initBattle(
   };
 }
 
+export const BASIC_STRIKE: SkillTag = {
+  id: 'basic_strike', name: '平砍剑气', category: 'sword', rarity: '黄阶',
+  description: '不耗灵力，凝聚 1 层剑意。', mpCost: 0, cooldown: 0, damageMult: 0.95, swordIntentGain: 1,
+};
+
+export const FOCUS_BREATH: SkillTag = {
+  id: 'focus_breath', name: '调息护体', category: 'defense', rarity: '黄阶', mpCost: 0, cooldown: 0,
+  damageMult: 0, description: '回复 12 灵力，本回合所受攻击减半。',
+};
+
+export function pendingEnemyStrike(enemy: EnemyConfig, turn: number) {
+  return enemy.skills.find((skill) => skill.windup && turn > 1 && turn % skill.windup.everyTurns === 0);
+}
+
+export function autoBattleSkill(battle: BattleState, player: PlayerState, skills: SkillTag[]): SkillTag {
+  const ready = player.equippedSkills.map((id) => skills.find((s) => s.id === id))
+    .filter((s): s is SkillTag => Boolean(s && player.mp >= s.mpCost && !battle.skillCooldowns[s.id]));
+  if (pendingEnemyStrike(battle.enemy, battle.turn) && battle.enemyHp > player.atk) {
+    return ready.find((s) => s.shieldPct || (s.stunChance ?? 0) >= 0.5) ?? FOCUS_BREATH;
+  }
+  return ready.find((s) => s.consumeSwordIntent && battle.playerSwordIntent >= 2) ??
+    ready.find((s) => s.id !== 'basic_sword') ?? ready[0] ?? BASIC_STRIKE;
+}
+
 export function executeBattleTurn(
   battle: BattleState,
   player: PlayerState,
@@ -543,12 +592,14 @@ export function executeBattleTurn(
     return { nextBattle: battle, nextPlayer: player };
   }
 
-  const skill =
-    skills.find((s) => s.id === selectedSkillId) ??
-    skills.find((s) => s.id === 'basic_sword') ??
-    skills[0];
+  const focusing = selectedSkillId === FOCUS_BREATH.id;
+  const skill = focusing ? FOCUS_BREATH : selectedSkillId === BASIC_STRIKE.id ? BASIC_STRIKE :
+    skills.find((s) => s.id === selectedSkillId) ?? BASIC_STRIKE;
 
-  const combatStats = getEffectiveCombatStats(player, skills);
+  const bonds = equippedSchools(player.equippedSkills, skills).active;
+  const combatStats = getEffectiveCombatStats(player, skills, bonds);
+  const sword = bonds.find((bond) => bond.category === 'sword');
+  const poisonMult = 1 + (bonds.find((bond) => bond.category === 'alchemy')?.poisonBonus ?? 0);
   const newLogs: BattleLogLine[] = [...battle.logs];
   let nextPlayerHp = player.hp;
   let nextPlayerMp = player.mp;
@@ -566,16 +617,7 @@ export function executeBattleTurn(
 
   // Player action
   const canCast = nextPlayerMp >= skill.mpCost && (battle.skillCooldowns[skill.id] ?? 0) === 0;
-  const activeSkill = canCast
-    ? skill
-    : ({
-        id: 'basic_strike',
-        name: '平砍剑气',
-        mpCost: 0,
-        cooldown: 0,
-        damageMult: 0.95,
-        swordIntentGain: 1,
-      } as SkillTag);
+  const activeSkill = canCast ? skill : BASIC_STRIKE;
 
   if (canCast) {
     nextPlayerMp -= activeSkill.mpCost;
@@ -583,6 +625,7 @@ export function executeBattleTurn(
       nextCooldowns[activeSkill.id] = activeSkill.cooldown;
     }
   }
+  if (focusing) nextPlayerMp = Math.min(player.maxMp, nextPlayerMp + 12);
 
   if (activeSkill.selfHpCostPct) {
     const costHp = Math.max(1, Math.round(nextPlayerHp * activeSkill.selfHpCostPct));
@@ -609,7 +652,7 @@ export function executeBattleTurn(
   const rawDmg =
     combatStats.atk * activeSkill.damageMult * berserkMult - effectiveEnemyDef * 0.45;
   const variance = 0.94 + Math.random() * 0.14;
-  let finalDmg = Math.max(
+  let finalDmg = focusing ? 0 : Math.max(
     6,
     Math.round(rawDmg * variance * (isCrit ? 1.68 : 1))
   );
@@ -627,21 +670,26 @@ export function executeBattleTurn(
   const intentNote =
     intentTrueDmg > 0 ? `（引爆${nextSwordIntent}层剑意追加 ${intentTrueDmg} 真伤！）` : '';
 
-  if (activeSkill.consumeSwordIntent) {
-    nextSwordIntent = 0;
-  } else if (activeSkill.swordIntentGain) {
-    nextSwordIntent = Math.min(8, nextSwordIntent + activeSkill.swordIntentGain);
-  }
+  const bonusIntent = activeSkill.category === 'sword' ? sword?.swordIntentGain ?? 0 : 0;
+  if (activeSkill.consumeSwordIntent) nextSwordIntent = 0;
+  nextSwordIntent = Math.min(8, nextSwordIntent + (activeSkill.swordIntentGain ?? 0) + bonusIntent);
 
   newLogs.push({
     id: `t${battle.turn}_p_${Date.now()}`,
     turn: battle.turn,
     actor: 'player',
-    text: `你催动【${activeSkill.name}】${hitNote}${pierceNote}${
+    text: focusing ? `你收招调息，回复 ${nextPlayerMp - player.mp} 点灵力，凝神防备来招。` : `你催动【${activeSkill.name}】${hitNote}${pierceNote}${
       isCrit ? '触发会心暴击！' : '，'
     }对${battle.enemy.name}造成 ${finalDmg} 点伤害！${intentNote}`,
-    tone: isCrit ? 'crit' : 'damage',
+    tone: focusing ? 'info' : isCrit ? 'crit' : 'damage',
   });
+
+  if (sword?.swordStrikeMult && nextEnemyHp > 0) {
+    const strike = Math.round(combatStats.atk * sword.swordStrikeMult);
+    nextEnemyHp = Math.max(0, nextEnemyHp - strike);
+    newLogs.push({ id: `t${battle.turn}_sword_bond`, turn: battle.turn, actor: 'player',
+      text: `剑罡追斩，另造成 ${strike} 点伤害。`, tone: 'damage' });
+  }
 
   if (activeSkill.healPct) {
     const heal = Math.round(player.maxHp * activeSkill.healPct);
@@ -655,8 +703,9 @@ export function executeBattleTurn(
     });
   }
 
-  if (activeSkill.lifestealPct) {
-    const steal = Math.round(finalDmg * activeSkill.lifestealPct);
+  const lifesteal = (activeSkill.lifestealPct ?? 0) + (bonds.find((bond) => bond.category === 'blood')?.lifestealBonus ?? 0);
+  if (lifesteal > 0) {
+    const steal = Math.round(finalDmg * lifesteal);
     nextPlayerHp = Math.min(player.maxHp, nextPlayerHp + steal);
     newLogs.push({
       id: `t${battle.turn}_psteal`,
@@ -692,7 +741,7 @@ export function executeBattleTurn(
 
   // Poison Detonation Mechanic
   if (activeSkill.detonatePoison && nextPoison >= 5 && nextEnemyHp > 0) {
-    const detonateDmg = Math.round(nextPoison * (24 + combatStats.atk * 0.32));
+    const detonateDmg = Math.round(nextPoison * (24 + combatStats.atk * 0.32) * poisonMult);
     nextEnemyHp = Math.max(0, nextEnemyHp - detonateDmg);
     newLogs.push({
       id: `t${battle.turn}_detonate`,
@@ -705,7 +754,8 @@ export function executeBattleTurn(
   }
 
   // Stun / Paralyze Mechanic
-  if (activeSkill.stunChance && Math.random() < activeSkill.stunChance && nextEnemyHp > 0) {
+  const thunderBonus = activeSkill.category === 'thunder' ? bonds.find((bond) => bond.category === 'thunder')?.stunBonus ?? 0 : 0;
+  if (activeSkill.stunChance && Math.random() < activeSkill.stunChance + thunderBonus && nextEnemyHp > 0) {
     nextStunned = true;
     newLogs.push({
       id: `t${battle.turn}_stun`,
@@ -718,7 +768,7 @@ export function executeBattleTurn(
 
   // Poison tick
   if (nextEnemyHp > 0 && nextPoison > 0) {
-    const poisonDmg = Math.max(8, Math.round(nextPoison * (12 + combatStats.atk * 0.15)));
+    const poisonDmg = Math.max(8, Math.round(nextPoison * (12 + combatStats.atk * 0.15) * poisonMult));
     nextEnemyHp = Math.max(0, nextEnemyHp - poisonDmg);
     newLogs.push({
       id: `t${battle.turn}_poison`,
@@ -776,11 +826,13 @@ export function executeBattleTurn(
 
   // Enemy turn (Skipped if Stunned!)
   if (!nextStunned) {
-    const enemySkill =
-      battle.enemy.skills[Math.floor(Math.random() * battle.enemy.skills.length)] ??
-      battle.enemy.skills[0];
+    const ordinary = battle.enemy.skills.filter((s) => !s.windup);
+    const enemySkill = pendingEnemyStrike(battle.enemy, battle.turn) ??
+      ordinary[Math.floor(Math.random() * ordinary.length)] ?? battle.enemy.skills[0];
     const rawEnemyDmg = battle.enemy.atk * enemySkill.damageMult - combatStats.def * 0.5;
     let enemyDmg = Math.max(5, Math.round(rawEnemyDmg * (0.9 + Math.random() * 0.2)));
+    const guarded = focusing ? Math.floor(enemyDmg / 2) : 0;
+    enemyDmg -= guarded;
 
     let absorbed = 0;
     if (nextShield > 0) {
@@ -795,6 +847,8 @@ export function executeBattleTurn(
       turn: battle.turn,
       actor: 'enemy',
       text: `${enemySkill.description} 造成 ${enemyDmg} 点伤害${
+        guarded > 0 ? `（护体化去 ${guarded}）` : ''
+      }${
         absorbed > 0 ? `（护盾抵消 ${absorbed}）` : ''
       }。`,
       tone: 'damage',
@@ -864,6 +918,9 @@ export function executeBattleTurn(
     }
   }
 
+  const windup = pendingEnemyStrike(battle.enemy, battle.turn + 1);
+  if (windup?.windup) newLogs.push({ id: `t${battle.turn}_windup`, turn: battle.turn, actor: 'enemy',
+    text: `${windup.windup.cue} 下回合将施展【${windup.name}】。`, tone: 'info' });
   return {
     nextBattle: {
       ...battle,
@@ -924,7 +981,8 @@ export function interactWithCharacter(
   player: PlayerState,
   action: 'chat' | 'gift' | 'dual_cultivate',
   giftItem?: ItemConfig,
-  npcRealmIndex = 4
+  npcRealmIndex = 4,
+  skillDefs: SkillTag[] = [],
 ): {
   nextCharacters: Record<string, CharacterRuntimeState>;
   nextPlayer: PlayerState;
@@ -940,8 +998,9 @@ export function interactWithCharacter(
 
   const currentRealm = REALMS[player.realmIndex] ?? REALMS[0];
 
+  if (!charState.met) return { nextPlayer: player, nextCharacters, message: '你们还未见过面。', shuraTriggered: false };
   if (action === 'chat') {
-    const stage = getAffectionStage(charState.affection).stage;
+    const stage = getAffectionStage(charState.isSoulmate ? charState.affection : Math.min(59, charState.affection)).stage;
     const pool = charData.dialogues[stage];
     const line = pool[Math.floor(Math.random() * pool.length)] ?? '“道友近来安好？”';
     const gain = 0;
@@ -998,7 +1057,8 @@ export function interactWithCharacter(
       npcRealmIndex > player.realmIndex
         ? Math.round(currentRealm.maxExp * 0.14)
         : 0;
-    const totalDualExp = Math.max(160, basePctExp + higherRealmBonus);
+    const yinYang = equippedSchools(player.equippedSkills, skillDefs).active.find((bond) => bond.category === 'yin_yang');
+    const totalDualExp = Math.round(Math.max(160, basePctExp + higherRealmBonus) * (1 + (yinYang?.dualExpBonus ?? 0)));
 
     const scenes = charData.dualCultivationScenes?.length
       ? charData.dualCultivationScenes
@@ -1035,7 +1095,7 @@ export function interactWithCharacter(
 
   // Check jealousy / Shura field trigger if multiple high-affection heroines exist
   const otherHighAff = Object.values(nextCharacters).filter(
-    (c) => c.id !== charData.id && c.affection >= 60
+    (c) => c.id !== charData.id && c.isSoulmate && c.affection >= 60
   );
   if (nextCharacters[charData.id].isSoulmate && otherHighAff.some((c) => c.isSoulmate) && Math.random() < 0.28) {
     shuraTriggered = true;

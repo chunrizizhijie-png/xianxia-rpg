@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import { REALMS } from './data/realms';
 import { EVENTS } from './data/events';
+import { hasOrigin } from './data/destinies';
 import { ENEMIES, ITEMS, SKILLS } from './data/itemsAndSkills';
 import {
   CRAFT_MATERIALS,
@@ -43,7 +44,6 @@ import {
   SaveSlotData,
   SkillCategory,
   SkillTag,
-  SpiritRootType,
 } from './types/game';
 import type { JourneyState, NpcChatMessage } from './types/journey';
 import {
@@ -53,6 +53,7 @@ import {
   createInitialCharacters,
   createInitialPlayer,
   cultivate,
+  daysToBottleneck,
   executeBattleTurn,
   filterAvailableEvents,
   formatAge,
@@ -69,7 +70,9 @@ import {
   parseLife,
   readLastLife,
   readSaveSlots,
+  restoreCharacters,
   restoreJourney,
+  restoreCraftTalents,
   RESUME_STORAGE_KEY,
   SAVE_VERSION,
   SLOT_STORAGE_KEY,
@@ -78,7 +81,7 @@ import {
 } from './engine/lifeSave';
 import { HERB_VALLEY, HERBALIST, herbJournalLine, rememberNpc } from './engine/herbJourney';
 import {
-  answerSmallTalk, chooseDialogue, matchDialogueInput, openConversation,
+  answerSmallTalk, chooseDialogue, encounterCharacter, matchDialogueInput, openConversation,
   type DialogueChoice, type DialogueNode,
 } from './engine/npcDialogue';
 import { isMemoryTurn, npcChatMessages, npcDecisionMessages, npcPlanLabel, saveNpcChat } from './engine/npcChat';
@@ -87,6 +90,7 @@ import { giftRefusal, relationshipFor, storyEventId } from './engine/relationshi
 import { applyStoryOutcome, createStoryPrompt, settleStoryFollowups } from './engine/openStory';
 import { LocalStoryModel } from './engine/localStoryModel';
 import { CharacterCreationModal } from './components/CharacterCreationModal';
+import { finishBirthDraft, type BirthDraft } from './engine/birth';
 import { TopStatusBar } from './components/TopStatusBar';
 import { PortraitStage } from './components/PortraitStage';
 import { BreakthroughModal } from './components/BreakthroughModal';
@@ -94,6 +98,8 @@ import { EventModal } from './components/EventModal';
 import { BattlePanel } from './components/BattlePanel';
 import { ImmortalBondPanel } from './components/ImmortalBondPanel';
 import { InventoryAndSkillsPanel } from './components/InventoryAndSkillsPanel';
+import { applyCraftAction, CRAFT_ITEMS, RECIPES, type CraftAction } from './engine/crafting';
+import { CraftingPanel } from './components/CraftingPanel';
 import { SandboxHubPanel } from './components/SandboxHubPanel';
 import { SettingsAndHotReloadModal } from './components/SettingsAndHotReloadModal';
 import { EpitaphModal } from './components/EpitaphModal';
@@ -101,7 +107,9 @@ import { NpcConversation } from './components/NpcConversation';
 import { LifeFileInput } from './components/LifeFileInput';
 import { OpenStoryPanel } from './components/OpenStoryPanel';
 
-const STARTING_MATERIALS = { taibai_metal: 2, snow_lotus: 2, blood_ginseng: 2, thunder_bamboo: 1, fox_core: 1 };
+const BASE_ITEMS = [...ITEMS, ...CRAFT_ITEMS];
+const STARTING_MATERIALS: Record<string, number> = {};
+const WORKSHOP_PRODUCTS = new Set(RECIPES.map(recipe => recipe.id));
 const DAYS_PER_MONTH = 30;
 
 export default function App() {
@@ -109,7 +117,7 @@ export default function App() {
   const [characterDefs, setCharacterDefs] = useState<CharacterData[]>(ALL_CHARACTERS);
   const [eventDefs, setEventDefs] = useState<GameEvent[]>(EVENTS);
   const [skillDefs, setSkillDefs] = useState<SkillTag[]>(SKILLS);
-  const [itemDefs, setItemDefs] = useState<ItemConfig[]>(ITEMS);
+  const [itemDefs, setItemDefs] = useState<ItemConfig[]>(BASE_ITEMS);
   const [charStates, setCharStates] = useState<Record<string, CharacterRuntimeState>>(() =>
     createInitialCharacters(ALL_CHARACTERS)
   );
@@ -117,6 +125,7 @@ export default function App() {
   const { npcStatuses, regionId: currentRegionId } = journey;
   const [materials, setMaterials] = useState<Record<string, number>>(STARTING_MATERIALS);
   const [activeCharId, setActiveCharId] = useState<string>(ALL_CHARACTERS[0].id);
+  const [retreatPlan, setRetreatPlan] = useState('week');
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [activeEvent, setActiveEvent] = useState<GameEvent | null>(null);
   const [eventResultText, setEventResultText] = useState<string | null>(null);
@@ -219,7 +228,7 @@ export default function App() {
       pendingEventMinimized: activeEvent && eventResultText === null && eventMinimized ? true : undefined,
       materials,
       customSkills: skillDefs.filter((skill) => !SKILLS.includes(skill)),
-      customItems: itemDefs.filter((item) => !ITEMS.includes(item)),
+      customItems: itemDefs.filter((item) => !BASE_ITEMS.includes(item)),
       customCharacters: characterDefs.filter((character) => !ALL_CHARACTERS.includes(character)),
       customEvents: eventDefs.filter((event) => !EVENTS.includes(event)),
     };
@@ -234,7 +243,7 @@ export default function App() {
     closeStoryPanel();
     setStoryResult(null);
     const defs = [...ALL_CHARACTERS, ...(save.customCharacters ?? [])];
-    const characters = { ...createInitialCharacters(defs), ...save.characters };
+    const characters = restoreCharacters(save, defs);
     let restoredJourney = restoreJourney(save, defs);
     let pendingEvent = save.pendingEvent;
     if (pendingEvent) {
@@ -250,9 +259,9 @@ export default function App() {
     }
     setCharacterDefs(defs);
     setSkillDefs([...(save.customSkills ?? []), ...SKILLS]);
-    setItemDefs([...(save.customItems ?? []), ...ITEMS]);
+    setItemDefs([...(save.customItems ?? []), ...BASE_ITEMS]);
     setEventDefs([...(save.customEvents ?? []), ...EVENTS]);
-    setPlayer(save.player);
+    setPlayer({ ...save.player, craftTalents: restoreCraftTalents(save, restoredJourney) });
     setCharStates(characters);
     setJourney(restoredJourney);
     setMaterials(save.materials ?? STARTING_MATERIALS);
@@ -280,12 +289,12 @@ export default function App() {
 
   const handleStartGame = (
     daoName: string,
-    root: SpiritRootType,
-    traits: string[]
+    birth: BirthDraft,
   ) => {
     closeStoryPanel();
     setStoryResult(null);
-    const initP = createInitialPlayer(daoName, root, traits);
+    const initP = createInitialPlayer(daoName, birth.root, birth.traits, birth.craftTalents);
+    finishBirthDraft();
     const initChars = createInitialCharacters(characterDefs);
     setPlayer(initP);
     setCharStates(initChars);
@@ -293,7 +302,7 @@ export default function App() {
     setJourney(firstDay);
     setMaterials(STARTING_MATERIALS);
     setSkillDefs(SKILLS);
-    setItemDefs(ITEMS);
+    setItemDefs(BASE_ITEMS);
     setActiveCharId(characterDefs[0].id);
     setBattle(null);
     showEvent(null);
@@ -359,7 +368,7 @@ export default function App() {
     }
     const encounterRemains = !releaseDeferredEncounter() && Boolean(activeEvent);
     const tick = simulateWorldTick(from, characterDefs, aged, elapsedDays,
-      allowUrgent && !aged.isDead && !encounterRemains && !battle);
+      allowUrgent && !aged.isDead && !encounterRemains && !battle, charStates);
     const continued = settleStoryFollowups(tick.nextJourney);
     setJourney(continued.journey);
     for (const entry of continued.due) {
@@ -378,19 +387,29 @@ export default function App() {
     WORLD_REGIONS.find((r) => r.id === currentRegionId) ?? WORLD_REGIONS[0];
   const cultMult =
     getEffectiveCultivationMult(player, skillDefs) * currentRegion.spiritDensity;
-  const activeChar =
-    characterDefs.find((c) => c.id === activeCharId) ?? characterDefs[0];
+  const acquaintances = characterDefs.filter((character) => charStates[character.id]?.met);
+  const activeChar = acquaintances.find((character) => character.id === activeCharId) ?? acquaintances[0] ?? characterDefs[0];
   const activeCharState = charStates[activeChar.id];
   const relationships = Object.fromEntries(characterDefs.map((character) => [
     character.id, relationshipFor(journey, character.id, charStates[character.id]),
   ]));
 
-  const handleCultivate = (months: number) => {
+  const goalDays = daysToBottleneck(player, skillDefs, currentRegion.spiritDensity);
+  const appointmentDays = [
+    ...(journey.herb.phase === 'promised' && journey.herb.meetingDay !== undefined ? [journey.herb.meetingDay] : []),
+    ...(journey.openStory?.pending ?? []).filter((entry) => entry.npcTask?.kind === 'meet').map((entry) => entry.day),
+  ].filter((day) => day >= journey.day);
+  const nextAppointment = appointmentDays.length ? Math.min(...appointmentDays) : undefined;
+  const beforeMeeting = nextAppointment === undefined ? 0 : Math.max(0, nextAppointment - journey.day - 1);
+  const selectedRetreat = retreatPlan === 'meeting' && !beforeMeeting ? 'week' : retreatPlan;
+  const retreatDays = selectedRetreat === 'week' ? 7 : selectedRetreat === 'season' ? 90
+    : selectedRetreat === 'bottleneck' ? goalDays : beforeMeeting;
+  const handleCultivate = (days: number) => {
     if (battle || player.isDead || eventVisible) return;
     const lifeDays = (player.lifespanCapYears * 12 - player.ageMonths) * DAYS_PER_MONTH -
       ((journey.day - 1) % DAYS_PER_MONTH);
-    const plannedDays = Math.max(0, Math.min(months * DAYS_PER_MONTH, lifeDays));
-    const interruption = findRetreatInterruption(journey, characterDefs, player, plannedDays);
+    const plannedDays = Math.max(0, Math.min(days, lifeDays));
+    const interruption = findRetreatInterruption(journey, characterDefs, player, plannedDays, charStates);
     const elapsedDays = interruption ? interruption.day - journey.day : plannedDays;
     const { nextPlayer, expGained } = cultivate(player, REALMS, skillDefs, elapsedDays, currentRegion.spiritDensity);
     const from = interruption ? {
@@ -428,12 +447,18 @@ export default function App() {
 
   const handleExplore = (isSecretRealm = false) => {
     if (battle || player.isDead || eventVisible) return;
-    const pool = filterAvailableEvents(eventDefs, player, charStates);
+    const pool = filterAvailableEvents(eventDefs, player, charStates, currentRegionId, journey.clearedSites);
     const filtered = isSecretRealm
-      ? pool.filter((e) => e.category === 'secret_realm' || e.category === 'encounter')
+      ? pool.filter((e) => e.category === 'secret_realm')
       : pool;
-    const source = filtered.length > 0 ? filtered : pool;
-    const picked = source[Math.floor(Math.random() * source.length)];
+    if (!filtered.length) {
+      const clue = eventDefs.find(e => e.category === 'secret_realm' && e.regionId &&
+        player.realmIndex >= (e.minRealmIndex ?? 0) && !journey.clearedSites?.includes(e.id));
+      const place = WORLD_REGIONS.find(r => r.id === clue?.regionId);
+      appendLog(player, 'event', clue && place ? '行脚人提到' + place.name + '的「' + clue.title + '」，你记下了去路。' : '你打听了一圈，此地眼下没有可探的遗迹。');
+      return;
+    }
+    const picked = filtered[Math.floor(Math.random() * filtered.length)];
     if (picked) {
       releaseDeferredEncounter();
       showEvent(picked);
@@ -443,7 +468,7 @@ export default function App() {
   const handleStartSparWithChar = (charId: string, eventId?: string) => {
     const cDef = characterDefs.find((c) => c.id === charId);
     const st = npcStatuses[charId];
-    if (!cDef || player.isDead || battle || st?.regionId !== currentRegionId) return;
+    if (!cDef || !charStates[charId]?.met || st?.activityKey === 'craft-order' || player.isDead || battle || st?.regionId !== currentRegionId) return;
     const sparEnemy = createSparEnemyFromCharacter(cDef, st?.realmIndex ?? 3);
     releaseDeferredEncounter();
     showEvent(null);
@@ -451,7 +476,7 @@ export default function App() {
   };
 
   const handleEventChoice = (choice: EventChoice) => {
-    if (!activeEvent || eventResultText !== null) return;
+    if (!activeEvent || eventResultText !== null || !hasOrigin(player.destinyTraits, choice.requiredOrigin)) return;
     const passed = checkEventStat(player, choice.check);
     const selectedOutcome = passed
       ? choice.successOutcome
@@ -481,7 +506,9 @@ export default function App() {
       localEncounter ? 0 : 2,
     );
 
-    let nextJourney = journey;
+    const tookTreasure = activeEvent.category === 'secret_realm' && passed &&
+      Boolean(outcome.itemGainId || outcome.skillGainId) && !outcome.triggerBattleEnemyId;
+    let nextJourney = tookTreasure ? { ...journey, clearedSites: [...new Set([...(journey.clearedSites ?? []), activeEvent.id])] } : journey;
     if (witness && !outcome.triggerBattleEnemyId) {
       nextJourney = rememberNpc(nextJourney, witness, { id: memoryId, kind: memoryKind, detail: outcome.text });
       if (outcome.characterAffection?.emotion === 'injured' || choice.id === 'co_snatch_betray') {
@@ -595,6 +622,8 @@ export default function App() {
     if (!battle) return;
     let nextJourney = journey;
     if (battle.victory) {
+      const site = eventDefs.find(e => e.id === battle.contextTag?.eventId && e.category === 'secret_realm');
+      if (site) nextJourney = { ...journey, clearedSites: [...new Set([...(journey.clearedSites ?? []), site.id])] };
       appendLog(
         player,
         'battle',
@@ -610,7 +639,7 @@ export default function App() {
           const id = sparred ? 'battle:spar' : `event:${eventKey}:help`;
           const foughtBefore = journey.memories[cid]?.some((memory) =>
             memory.id === id || (sparred && memory.kind === 'spar'));
-          nextJourney = rememberNpc(journey, cid, {
+          nextJourney = rememberNpc(nextJourney, cid, {
             id,
             kind: sparred ? 'spar' : 'help',
             detail: sparred
@@ -640,7 +669,7 @@ export default function App() {
   };
 
   const handleBuyItem = (item: ItemConfig) => {
-    if (player.spiritStones < item.price) return;
+    if (WORKSHOP_PRODUCTS.has(item.id) || item.id.startsWith('crafted_') || player.spiritStones < item.price) return;
     const nextPlayer: PlayerState = {
       ...player,
       spiritStones: player.spiritStones - item.price,
@@ -677,8 +706,17 @@ export default function App() {
     const character = characterDefs.find((entry) => entry.id === charId);
     const runtime = charStates[charId];
     if (!character || !runtime || battle || player.isDead || eventVisible || storyJob.current) return;
-    const entry = openConversation({ character, runtime, player, journey });
-    const node = opening ? { ...entry, line: opening } : entry;
+    const local = npcStatuses[charId]?.regionId === currentRegionId;
+    if (!local && (!runtime.met || !runtime.hasContact)) return;
+    const arrival = encounterCharacter(character, runtime, journey);
+    if (arrival) {
+      setCharStates((previous) => ({ ...previous, [charId]: arrival.runtime }));
+      setJourney(arrival.journey);
+      appendLog(player, 'bond', `在${currentRegion.name}结识了${character.name}。`, arrival.journey);
+    }
+    const entry = openConversation({ character, player, runtime: arrival?.runtime ?? runtime, journey: arrival?.journey ?? journey });
+    const line = arrival?.line ?? opening;
+    const node = line ? { ...entry, line } : entry;
     const history = journey.npcChats?.[charId];
     const turns = history?.messages ?? [];
     const resume = !opening && node.choices.length > 0 && turns.length > 0 &&
@@ -734,6 +772,10 @@ export default function App() {
     if (!action || !modelName || modelLoading || storyJob.current || eventVisible || battle || player.isDead) return false;
     const actor = characterDefs.find((character) => action.includes(character.name));
     const runtime = actor ? charStates[actor.id] : undefined;
+    if (actor && (!runtime?.met || (npcStatuses[actor.id]?.regionId !== currentRegionId && !runtime.hasContact))) {
+      setStoryError(runtime?.met ? '你们还没留下传音印记，得当面找她。' : '你们还未结识。可循当地见闻，当面互通姓名。');
+      return false;
+    }
     const request = new AbortController();
     storyJob.current = request;
     setStoryBusy(true);
@@ -857,7 +899,7 @@ export default function App() {
     const cDef = characterDefs.find((c) => c.id === charId);
     const cState = charStates[charId];
     const npcSt = npcStatuses[charId];
-    if (!cDef || !cState || battle || eventVisible || player.isDead || npcSt?.regionId !== currentRegionId) return;
+    if (!cDef || !cState?.met || battle || eventVisible || player.isDead || npcSt?.regionId !== currentRegionId) return;
     if (action === 'gift') {
       if (!giftItem || (player.inventory[giftItem.id] ?? 0) <= 0) return;
       const refusal = giftRefusal(journey, cDef, cState, giftItem);
@@ -879,7 +921,8 @@ export default function App() {
         player,
         action,
         giftItem,
-        npcSt?.realmIndex ?? 4
+        npcSt?.realmIndex ?? 4,
+        skillDefs,
       );
     setCharStates(nextCharacters);
     const from = action === 'gift' && giftItem && (player.inventory[giftItem.id] ?? 0) > 0
@@ -900,7 +943,8 @@ export default function App() {
     }
 
     if (shuraTriggered) {
-      const shuraEvt = eventDefs.find((e) => e.category === 'shura_field');
+      const shuraEvt = eventDefs.find((e) => e.category === 'shura_field' &&
+        e.requiredPartners?.every((id) => nextCharacters[id]?.isSoulmate));
       if (shuraEvt) {
         releaseDeferredEncounter();
         showEvent(shuraEvt);
@@ -941,7 +985,7 @@ export default function App() {
   };
 
   const handleBuyMaterial = (mat: CraftMaterial) => {
-    if (player.spiritStones < mat.price) return;
+    if (battle || eventVisible || !currentRegion.specialtyMaterials.includes(mat.id) || player.spiritStones < mat.price) return;
     setPlayer({ ...player, spiritStones: player.spiritStones - mat.price });
     setMaterials((prev) => ({ ...prev, [mat.id]: (prev[mat.id] ?? 0) + 1 }));
     appendLog(player, 'system', `花费 ${mat.price} 灵石购入灵材【${mat.name}】。`);
@@ -993,119 +1037,31 @@ export default function App() {
     );
   };
 
-  const handleForgeItems = (
-    matAId: string,
-    matBId: string,
-    mode: 'pill' | 'treasure',
-    customTitle: string
-  ) => {
-    const mA = CRAFT_MATERIALS.find((m) => m.id === matAId) ?? CRAFT_MATERIALS[0];
-    const mB = CRAFT_MATERIALS.find((m) => m.id === matBId) ?? CRAFT_MATERIALS[1];
-    const nextMats = { ...materials };
-    nextMats[mA.id] = Math.max(0, (nextMats[mA.id] ?? 0) - 1);
-    nextMats[mB.id] = Math.max(0, (nextMats[mB.id] ?? 0) - 1);
-    setMaterials(nextMats);
-
-    // Special Breakthrough Pill Recipes!
-    const pair = [mA.id, mB.id].sort().join('+');
-    if (mode === 'pill') {
-      if (pair === 'fox_core+snow_lotus') {
-        const nextP: PlayerState = {
-          ...player,
-          inventory: {
-            ...player.inventory,
-            golden_core_pill: (player.inventory.golden_core_pill ?? 0) + 1,
-          },
-        };
-        setPlayer(nextP);
-        appendLog(
-          nextP,
-          'system',
-          '丹成九转！你以天山雪莲与天狐媚珠成功炼出金丹破境至宝【结金丹】×1！'
-        );
-        return;
-      }
-      if (pair === 'fox_core+star_sand' || pair === 'blood_ginseng+star_sand') {
-        const nextP: PlayerState = {
-          ...player,
-          inventory: {
-            ...player.inventory,
-            nascent_soul_pill: (player.inventory.nascent_soul_pill ?? 0) + 1,
-          },
-        };
-        setPlayer(nextP);
-        appendLog(
-          nextP,
-          'system',
-          '仙光冲霄！你以周天星辰砂成功炼出元婴破境神丹【九转化婴丹】×1！'
-        );
-        return;
-      }
-      if (pair === 'blood_ginseng+snow_lotus') {
-        const nextP: PlayerState = {
-          ...player,
-          inventory: {
-            ...player.inventory,
-            barrier_break_pill: (player.inventory.barrier_break_pill ?? 0) + 1,
-          },
-        };
-        setPlayer(nextP);
-        appendLog(
-          nextP,
-          'system',
-          '丹香四溢！你成功炼出通用破境灵丹【破障丹】×1！'
-        );
-        return;
+  const craftContext = { player, journey, materials, charStates, characters: characterDefs, talents: player.craftTalents! };
+  const handleCraft = (action: CraftAction) => {
+    if (battle || player.isDead || eventVisible) return;
+    const result = applyCraftAction(craftContext, action);
+    if (!result.ok) { appendLog(player, 'system', result.message); return; }
+    setMaterials(result.materials);
+    let from = result.journey;
+    if (action.type === 'make' && action.maker !== 'player') {
+      const maker = characterDefs.find(c => c.id === action.maker);
+      const first = maker && charStates[maker.id] && encounterCharacter(maker, charStates[maker.id], from);
+      if (first && maker) {
+        from = first.journey;
+        setCharStates(prev => ({ ...prev, [maker.id]: first.runtime }));
+        appendLog(player, 'bond', first.line, from);
       }
     }
-
-    const newItemId = `crafted_${Date.now()}`;
-    const defaultName =
-      mode === 'treasure'
-        ? `${mA.name.slice(0, 2)}${mB.name.slice(0, 2)}神兵`
-        : `${mA.name.slice(0, 2)}${mB.name.slice(0, 2)}造化丹`;
-    const finalName = customTitle.trim() || defaultName;
-
-    const newItem: ItemConfig = {
-      id: newItemId,
-      name: finalName,
-      type: mode,
-      rarity: '仙品',
-      price: 200,
-      description: `由【${mA.name}】与【${mB.name}】合炼而成的自制${
-        mode === 'treasure' ? '本命法宝' : '造化奇丹'
-      }。`,
-      effect: {
-        atkBonus: (mA.statBoost.atk ?? 0) + (mB.statBoost.atk ?? 0),
-        defBonus: (mA.statBoost.def ?? 0) + (mB.statBoost.def ?? 0),
-        senseBonus: (mA.statBoost.sense ?? 0) + (mB.statBoost.sense ?? 0),
-        hpRestore: (mA.statBoost.hp ?? 0) + (mB.statBoost.hp ?? 0) + 150,
-        expGain: (mA.statBoost.exp ?? 0) + (mB.statBoost.exp ?? 0) + 140,
-        lifespanGain: (mA.statBoost.lifespan ?? 0) + (mB.statBoost.lifespan ?? 0),
-      },
-    };
-
-    setItemDefs((prev) => [newItem, ...prev]);
-    const nextP: PlayerState = {
-      ...player,
-      inventory: {
-        ...player.inventory,
-        [newItem.id]: 1,
-      },
-    };
-    setPlayer(nextP);
-    appendLog(
-      nextP,
-      'system',
-      `丹器出炉！你成功炼制出仙品【${newItem.name}】，已收入储物袋！`
-    );
+    const advanced = advanceJourney(result.player, { from: refreshNpcAgendas(from), days: result.days });
+    appendLog(advanced.player, 'system', result.message, advanced.journey);
   };
 
   // High-Stakes Intervention Event Builder!
   const handleInterveneNpc = (charId: string) => {
     const cDef = characterDefs.find((c) => c.id === charId);
     const st = npcStatuses[charId];
-    if (!cDef || !st?.canIntervene || st.regionId !== currentRegionId || battle || player.isDead || eventVisible) return;
+    if (!cDef || !charStates[charId]?.met || !st?.canIntervene || st.regionId !== currentRegionId || battle || player.isDead || eventVisible) return;
     const afterNotice = st.interveneType === 'rescue' ? markRescueSent(journey, charId) : journey;
     if (st.interveneType === 'rescue' && afterNotice === journey) {
       setJourney(refreshNpcAgendas(journey));
@@ -1129,7 +1085,7 @@ export default function App() {
   const handleToggleCompanion = (charId: string) => {
     const cDef = characterDefs.find((c) => c.id === charId);
     const st = npcStatuses[charId];
-    if (!cDef || !st || battle || player.isDead || st.regionId !== currentRegionId) return;
+    if (!cDef || !charStates[charId]?.met || st?.activityKey === 'craft-order' || !st || battle || player.isDead || st.regionId !== currentRegionId) return;
     if (!st.isCompanion && relationships[charId]?.inviteReason) return;
 
     const nextVal = !st.isCompanion;
@@ -1189,6 +1145,7 @@ export default function App() {
     }
     setShowSettings(false);
     setPlayer(null);
+    finishBirthDraft();
   };
 
   const handleInjectCustomData = (
@@ -1216,6 +1173,11 @@ export default function App() {
           Array.isArray(c.personalityTags) && c.chatOptions?.length >= 3 &&
           new Set(c.dualCultivationScenes ?? []).size >= 4 && c.proactiveVisitEvents?.length > 0);
         if (!valid) return { ok: false, message: '请检查角色资料、至少三条专属对话、四幕独立双修剧情和主动事件。' };
+        const ids = new Set(characterDefs.map((character) => character.id));
+        for (const entry of parsed) {
+          if (ids.has(entry.id)) return { ok: false, message: '人物标识重复，请为新人物使用独立的 id。' };
+          ids.add(entry.id);
+        }
         setCharacterDefs((prev) => [...prev, ...parsed]);
         setCharStates((prev) => ({ ...prev, ...createInitialCharacters(parsed) }));
         setJourney((prev) => refreshNpcAgendas({
@@ -1259,7 +1221,7 @@ export default function App() {
 
       {/* Main 2-Column Layout: Left Gameplay + Right Heroine Portrait Stage */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-stretch">
-        <div className="lg:col-span-8 space-y-4">
+        <div className={activeCharState?.met ? 'lg:col-span-8 space-y-4' : 'lg:col-span-12 space-y-4'}>
           {/* Cultivation & Core Action Console */}
           <div className="xuan-card rounded-xl p-4 space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1315,15 +1277,20 @@ export default function App() {
               >
                 歇息一日
               </button>
-              <button
-                type="button"
-                disabled={Boolean(battle)}
-                onClick={() => handleCultivate(3)}
-                className="flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl bg-[#12151b] hover:bg-[#1e232e] border border-[#c5a059]/35 text-xs font-semibold text-stone-100 disabled:opacity-40 transition"
-              >
-                <Sparkles className="w-4 h-4 text-[#c5a059]" />
-                闭关修炼 (3月)
-              </button>
+              <div className="flex flex-col gap-1">
+                <select aria-label="闭关期限" value={selectedRetreat} onChange={(event) => setRetreatPlan(event.target.value)}
+                  className="min-w-0 rounded border border-stone-700 bg-[#12151b] p-1 text-xs text-stone-200">
+                  <option value="week">吐纳七日</option>
+                  <option value="season">静修三月</option>
+                  <option value="bottleneck">修至瓶颈（{goalDays} 日）</option>
+                  {beforeMeeting > 0 && <option value="meeting">约前一日出关（{beforeMeeting} 日）</option>}
+                </select>
+                <button type="button" disabled={Boolean(battle) || eventVisible || retreatDays <= 0}
+                  onClick={() => handleCultivate(retreatDays)}
+                  className="flex items-center justify-center gap-1 rounded border border-[#c5a059]/35 px-2 py-1.5 text-xs text-[#e2c488] disabled:opacity-40">
+                  <Sparkles className="h-3 w-3" /> 入定闭关
+                </button>
+              </div>
 
               <button
                 type="button"
@@ -1359,6 +1326,8 @@ export default function App() {
                 {canBreakthrough ? '冲击瓶颈！' : '修为未满'}
               </button>
             </div>
+            {nextAppointment !== undefined && journey.day + retreatDays >= nextAppointment &&
+              <p className="text-xs text-amber-300">第 {nextAppointment} 日有约。此次预计第 {journey.day + retreatDays} 日出关，记得留出赶路时间。</p>}
           </div>
 
           {herbLine && !battle && (
@@ -1369,9 +1338,12 @@ export default function App() {
                   <p className="mt-1 text-sm text-stone-300">{herbLine}</p>
                 </div>
                 {journey.herb.phase !== 'declined' && (currentRegionId === HERB_VALLEY ? (
+                  npcStatuses[HERBALIST]?.regionId !== currentRegionId && !charStates[HERBALIST]?.hasContact ? (
+                    <span className="text-xs text-stone-400">药庐今日闭门，改日再来。</span>
+                  ) :
                   <button type="button" onClick={() => handleTalk(HERBALIST)}
                     className="rounded border border-[#c5a059]/45 px-3 py-2 text-xs text-[#e2c488]">
-                    {npcStatuses[HERBALIST]?.regionId === currentRegionId ? '去药庐见林婉儿' : '向林婉儿传音'}
+                    {npcStatuses[HERBALIST]?.regionId === currentRegionId ? charStates[HERBALIST]?.met ? '去药庐见林婉儿' : '拜访药庐主人' : '向林婉儿传音'}
                   </button>
                 ) : herbRegion && (
                   <button type="button" onClick={() => handleTravelRegion(herbRegion)}
@@ -1433,15 +1405,17 @@ export default function App() {
             onBuyMaterial={handleBuyMaterial}
             onCreateProceduralSkill={handleCreateProceduralSkill}
             onFuseSkills={handleFuseSkills}
-            onForgeItems={handleForgeItems}
+            workshop={<fieldset disabled={Boolean(battle) || eventVisible}>
+              <CraftingPanel context={craftContext} onAction={handleCraft} />
+            </fieldset>}
             onTalk={handleTalk}
             onInterveneNpc={handleInterveneNpc}
             onToggleCompanion={handleToggleCompanion}
           />
 
           {/* Immortal Bond & Inventory/Skills */}
-          <ImmortalBondPanel
-            characters={characterDefs}
+          {acquaintances.length > 0 && <ImmortalBondPanel
+            characters={acquaintances}
             charStates={charStates}
             activeCharId={activeChar.id}
             player={player}
@@ -1451,9 +1425,10 @@ export default function App() {
             onInteract={handleInteract}
             onTalk={handleTalk}
             local={npcStatuses[activeChar.id]?.regionId === currentRegionId}
+            atWork={npcStatuses[activeChar.id]?.activityKey === 'craft-order'}
             relationship={relationships[activeChar.id]}
             onSparWithChar={handleStartSparWithChar}
-          />
+          />}
 
           <InventoryAndSkillsPanel
             player={player}
@@ -1461,6 +1436,7 @@ export default function App() {
             skills={skillDefs}
             onUseItem={handleUseItem}
             onBuyItem={handleBuyItem}
+            workshopProducts={WORKSHOP_PRODUCTS}
             onToggleEquipSkill={handleToggleEquipSkill}
           />
         </div>
@@ -1468,7 +1444,7 @@ export default function App() {
         {/* Right Sticky Heroine Portrait Stage */}
         <div className="hidden lg:col-span-4 lg:block">
           <div className="lg:sticky lg:top-4">
-            {activeCharState && (
+            {activeCharState?.met && (
               <PortraitStage
                 character={activeChar}
                 runtime={activeCharState}

@@ -1,6 +1,9 @@
 import { REALMS } from '../data/realms';
+import { validCraftTalents } from './birth';
+import { isCraftState } from './crafting';
 import type { CharacterData, SaveSlotData } from '../types/game';
 import type { JourneyState } from '../types/journey';
+import { createInitialCharacters } from './gameEngine';
 import { initializeJourney } from './livingWorldEngine';
 
 export const SAVE_VERSION = 1;
@@ -31,6 +34,8 @@ function isJourney(value: unknown): value is JourneyState {
     (value.retreatNotices === undefined || (Array.isArray(value.retreatNotices) &&
       value.retreatNotices.every((id) => typeof id === 'string'))) &&
     (value.openStory === undefined || isOpenStory(value.openStory)) &&
+    (value.clearedSites === undefined || (Array.isArray(value.clearedSites) && value.clearedSites.every(id => typeof id === 'string'))) &&
+    (value.craft === undefined || isCraftState(value.craft)) &&
     (value.npcChats === undefined || (isRecord(value.npcChats) && Object.values(value.npcChats).every((thread) =>
       isRecord(thread) && Number.isSafeInteger(thread.day) && typeof thread.regionId === 'string' &&
       (thread.greeting === undefined || typeof thread.greeting === 'string') &&
@@ -58,6 +63,7 @@ export function parseLife(value: unknown): SaveSlotData | null {
   if (!isRecord(value) || !isRecord(value.player) || !isRecord(value.characters)) return null;
   if (value.version !== undefined && value.version !== SAVE_VERSION) return null;
   const player = value.player;
+  if (player.craftTalents !== undefined && !validCraftTalents(player.craftTalents)) return null;
   if (typeof player.daoName !== 'string' || typeof player.realmIndex !== 'number' ||
       !Number.isInteger(player.realmIndex) || !REALMS[player.realmIndex] ||
       !isRecord(player.inventory) || !isRecord(player.stats) ||
@@ -83,6 +89,7 @@ export function parseLife(value: unknown): SaveSlotData | null {
       value.customCharacters.some((entry) => !isRecord(entry) || !isRecord(entry.dialogues) ||
         !Array.isArray(entry.dialogues.stranger) || !Array.isArray(entry.personalityTags)))) return null;
   if (Object.values(value.characters).some((character) => !isRecord(character) ||
+      (character.hasContact !== undefined && typeof character.hasContact !== 'boolean') ||
       typeof character.affection !== 'number' || typeof character.lastSpokenLine !== 'string')) return null;
   if (Array.isArray(value.logs) && value.logs.some((log) => !isRecord(log) ||
       typeof log.text !== 'string' || typeof log.ageText !== 'string')) return null;
@@ -114,6 +121,37 @@ export function writeLocal(key: string, value: unknown): boolean {
   } catch {
     return false;
   }
+}
+
+// Older saves have a world seed but predate the two workshop aptitudes.
+export function restoreCraftTalents(save: SaveSlotData, journey: JourneyState) {
+  if (save.player.craftTalents) return save.player.craftTalents;
+  let hash = journey.seed >>> 0;
+  for (const letter of save.player.daoName) hash = Math.imul(hash ^ letter.charCodeAt(0), 0x01000193) >>> 0;
+  return { alchemy: hash & 3, smithing: (hash >>> 8) & 3 };
+}
+
+export function restoreCharacters(save: SaveSlotData, definitions: CharacterData[]) {
+  const defaults = createInitialCharacters(definitions);
+  for (const definition of definitions) {
+    const id = definition.id;
+    const saved = save.characters[id];
+    if (!saved) continue;
+    if (typeof saved.hasContact === 'boolean') {
+      defaults[id] = { ...defaults[id], ...saved };
+      continue;
+    }
+    // Older versions gave every character 18 points and marked them as met on day one.
+    const history = save.journey;
+    const interacted = saved.affection !== 18 || saved.interactionCount > 0 || saved.isSoulmate ||
+      (saved.dualCount ?? 0) > 0 || history?.npcStatuses[id]?.isCompanion ||
+      history?.npcChats?.[id]?.messages.some((message) => message.role === 'user') ||
+      history?.memories[id]?.some((memory) => memory.id !== 'herb-escort') ||
+      history?.openStory?.pending.some((entry) => entry.charId === id) ||
+      save.logs.some((entry) => entry.category === 'bond' && entry.text.includes(definition.name));
+    if (interacted) defaults[id] = { ...defaults[id], ...saved, met: true, hasContact: true };
+  }
+  return defaults;
 }
 
 export function restoreJourney(save: SaveSlotData, characters: CharacterData[]): JourneyState {

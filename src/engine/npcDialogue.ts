@@ -8,6 +8,7 @@ import type {
   PlayerState,
 } from '../types/game';
 import type { JourneyState, NpcMemory } from '../types/journey';
+import { relationshipFor } from './relationships';
 import { getAffectionStage } from './gameEngine';
 import {
   awaitsHerbApology,
@@ -23,7 +24,7 @@ import { getNpcAgendaReply, refreshNpcAgendas } from './livingWorldEngine';
 export type DialogueChoice = {
   label: string;
   action:
-    | 'greet' | 'agenda' | 'past' | 'private' | 'respect' | 'press' | 'topics'
+    | 'exchange' | 'greet' | 'agenda' | 'past' | 'private' | 'respect' | 'press' | 'topics'
     | 'herb' | 'promise' | 'decline' | 'apology' | 'investigate' | 'detour' | 'visit' | 'topic';
   topic?: CharacterChatOption;
   lockReason?: string;
@@ -83,12 +84,36 @@ function herbGreeting(journey: JourneyState, nearby: boolean): string | undefine
   }
 }
 
+const arrivals: Record<string, [string, string]> = {
+  shen_qingqiu: ['负剑的修士', '她把剑尖转向地面，抱拳还礼。「太虚剑宗，沈清秋。道友怎么称呼？」'],
+  ye_liuli: ['捧着茶盏的修士', '她把茶盏搁回桌上。「问我的名字？夜琉璃。还没请教你的道号。」'],
+  lin_waner: ['背药篓的药师', '药师正把晒干的药根拢进竹篓。听见你问候，她擦了擦手。「我叫林婉儿。来问诊，还是听人说起了进山的事？」'],
+  mu_qingge: ['携琴的修士', '她等弦音散尽才抬头。「慕清歌。你若想说话，这里正好空着一个座。」'],
+  ao_shuanghua: ['披着霜纹斗篷的修士', '她侧身让开路，报了姓名。「敖霜华。岸上风大，站过来些再说。」'],
+  su_xinghe: ['收起星盘的修士', '她在图纸上点好最后一笔。「苏星河。方才只顾着记星位，道友久等了。」'],
+};
+
+export function strangerTitle(character: CharacterData): string {
+  return arrivals[character.id]?.[0] ?? '一位过路修士';
+}
+
+export function encounterCharacter(character: CharacterData, runtime: CharacterRuntimeState, journey: JourneyState) {
+  if (runtime.met || journey.npcStatuses[character.id]?.regionId !== journey.regionId) return;
+  const line = arrivals[character.id]?.[1] ?? `你上前抱拳。对方还了一礼，与你互通道号。她名叫${character.name}。`;
+  const detail = `你与${character.name}第一次见面，互通了姓名。`;
+  return {
+    line, runtime: { ...runtime, met: true, lastSpokenLine: line },
+    journey: rememberNpc(journey, character.id, { id: 'first-meeting', kind: 'witness', detail }),
+  };
+}
+
 export function openConversation({ character, runtime, player, journey }: DialogueContext): DialogueNode {
   const profile = NPC_PROFILES[character.id];
   const status = journey.npcStatuses[character.id];
   const nearby = status?.regionId === journey.regionId;
   const memories = journey.memories[character.id] ?? [];
   const recentPressure = memories.find((memory) => memory.kind === 'pressure');
+  if (!runtime.met || (!nearby && !runtime.hasContact)) return { line: '尚未留下传音印记。', choices: [] };
   if (recentPressure && journey.day <= recentPressure.day + 1 &&
       !(character.id === HERBALIST && isHerbMeetingOpen(journey))) {
     return { line: profile?.privateTopic.press ?? '对方收起玉简，今日不再多谈。', choices: [] };
@@ -96,7 +121,7 @@ export function openConversation({ character, runtime, player, journey }: Dialog
   const personalHistory = [...memories].reverse()
     .find((memory) => memory.kind === 'help' || memory.kind === 'harm' || memory.kind === 'witness');
   let line = (nearby ? profile?.greeting : profile?.letter) ??
-    character.dialogues[getAffectionStage(runtime.affection).stage]?.[0] ??
+    character.dialogues[getAffectionStage(runtime.isSoulmate ? runtime.affection : Math.min(59, runtime.affection)).stage]?.[0] ??
     runtime.lastSpokenLine;
   line = rememberedReply(character, personalHistory) ?? line;
   if (status?.activityKey?.startsWith('npc-meeting:')) line = getNpcAgendaReply(journey, character.id);
@@ -107,6 +132,7 @@ export function openConversation({ character, runtime, player, journey }: Dialog
   }
 
   const choices: DialogueChoice[] = [];
+  if (nearby && !runtime.hasContact) choices.push({ action: 'exchange', label: '询问能否留下传音印记' });
   if (nearby && character.id === HERBALIST && journey.herb.phase === 'available') {
     choices.push({ action: 'herb', label: '问她药庐为何在找人进山' });
   }
@@ -122,11 +148,11 @@ export function openConversation({ character, runtime, player, journey }: Dialog
   choices.push({ action: 'agenda', label: '问她最近在忙什么' });
   if (profile) choices.push({ action: 'private', label: profile.privateTopic.question });
   if (character.chatOptions?.length) choices.push({ action: 'topics', label: '聊聊她擅长的道法' });
-  if (memories.some((memory) => memory.kind !== 'topic')) {
+  if (memories.some((memory) => memory.kind !== 'topic' && memory.id !== 'first-meeting')) {
     choices.push({ action: 'past', label: '说起你们从前的事' });
   }
   const visitedBefore = memories.some((memory) => memory.id.startsWith(`event:visit_${character.id}:`));
-  if (nearby && !owesApology && !visitedBefore && status?.canIntervene && status.interveneType !== 'rescue' &&
+  if (nearby && runtime.affection >= 25 && !owesApology && !visitedBefore && status?.canIntervene && status.interveneType !== 'rescue' &&
       character.proactiveVisitEvents?.length) {
     choices.push({ action: 'visit', label: '应她的邀请，坐下来叙谈' });
   }
@@ -154,7 +180,17 @@ export function chooseDialogue(
     journey,
   });
 
+  if (!runtime.met || (status?.regionId !== journey.regionId && !runtime.hasContact)) return result('你没有她的传音印记。', []);
   switch (choice.action) {
+    case 'exchange': {
+      if (runtime.hasContact || status?.regionId !== journey.regionId) return result(runtime.lastSpokenLine);
+      const shared = memories.some((memory) => ['help', 'promise', 'confidence', 'topic', 'spar'].includes(memory.kind));
+      if (!shared || relationshipFor(journey, character.id, runtime).label === '有隔阂') {
+        return result('她向你一拱手。「有缘还会碰面，今日先在这里说吧。」');
+      }
+      const next = result('她取出玉简，与你各留一道灵印。「下回不在一处，也能给我留个口信。」');
+      return { ...next, runtime: { ...next.runtime, hasContact: true } };
+    }
     case 'greet':
       return { ...result(''), node: openConversation(context), runtime };
     case 'agenda': {
@@ -263,12 +299,12 @@ export function chooseDialogue(
       const accept = choice.action === 'promise';
       const next = replyToHerbInvite(journey, accept);
       const changedPlans = journey.herb.phase === 'promised';
-      return {
-        ...result(accept
-          ? '「我会在药庐留一盏灯。要是耽搁了，先传个信给我。」她把两只药篓并到门边。'
+      const answer = result(accept
+          ? '她与你各留一道传音印记，又把两只药篓并到门边。「我会在药庐留一盏灯。要是耽搁了，先传个信给我。」'
           : changedPlans
             ? '「听见了。既提前告诉我，我就赶在出发前去找人。」'
-            : '「那我今日就去问旁人。早点说好，大家都省等。」她收起了给你的那只杯子。'),
+            : '「那我今日就去问旁人。早点说好，大家都省等。」她收起了给你的那只杯子。');
+      return { ...answer, runtime: { ...answer.runtime, hasContact: runtime.hasContact || (accept && next !== journey) },
         journey: refreshNpcAgendas(next),
       };
     }
@@ -302,6 +338,7 @@ export function chooseDialogue(
 }
 
 const spokenIntents: [DialogueChoice['action'], RegExp][] = [
+  ['exchange', /留.{0,4}(玉简|传音|印记)|交换.{0,3}玉简/],
   ['apology', /抱歉|对不起|赔个不是|失约.{0,6}错|我来道歉/],
   ['decline', /去不了|来不了|赶不过|没空|不便前往|不能.{0,5}(去|同[行去]|赴约|作陪)|不想(去|答应)|不赴约/],
   ['respect', /不追问|不多问|你愿意.{0,6}(说|讲)|想说.{0,5}(再说|告诉)|等你.{0,6}(愿意|想说)/],

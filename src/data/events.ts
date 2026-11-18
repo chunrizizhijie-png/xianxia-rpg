@@ -4,6 +4,7 @@ export const EVENTS: GameEvent[] = [
   // 1. 秘境夺宝 x3
   {
     id: 'evt_secret_sword_tomb',
+    regionId: 'qingming_wild',
     title: '古修剑冢现世',
     category: 'secret_realm',
     description: '青冥山脉深处忽然剑鸣阵阵，一座尘封千年的剑修洞府破开禁制，残破剑阵中隐约可见一卷青色玉简与数枚灵石。',
@@ -13,10 +14,10 @@ export const EVENTS: GameEvent[] = [
         text: '以神识推演剑阵生门，强行取宝（检定：神识 ≥ 22）',
         check: { stat: 'sense', threshold: 22, label: '神识 ≥ 22' },
         successOutcome: {
-          text: '你神识如丝般精准避开七处杀阵节点，稳稳摄出《青莲剑诀》玉简与一袋灵石！',
+          text: '你神识如丝般精准避开七处杀阵节点，稳稳摄出记载着万剑归宗终式的玉简与一袋灵石！',
           expDelta: 90,
           spiritStonesDelta: 85,
-          skillGainId: 'green_lotus_sword',
+          skillGainId: 'ten_thousand_swords',
         },
         failOutcome: {
           text: '剑阵杀机骤起，你仓促退避仍被一道余波剑气划伤肩胛，只捡回少许灵石。',
@@ -38,6 +39,7 @@ export const EVENTS: GameEvent[] = [
   },
   {
     id: 'evt_secret_flame_lotus',
+    regionId: 'yaowang_valley',
     title: '地火熔池红莲',
     category: 'secret_realm',
     minRealmIndex: 3,
@@ -70,6 +72,7 @@ export const EVENTS: GameEvent[] = [
   },
   {
     id: 'evt_secret_golem_hall',
+    regionId: 'zixiao_thunder',
     title: '上古机关藏宝殿',
     category: 'secret_realm',
     minRealmIndex: 5,
@@ -106,10 +109,17 @@ export const EVENTS: GameEvent[] = [
   // 2. 坊市捡漏 x3
   {
     id: 'evt_market_rusty_sword',
+    regionId: 'heishan_market',
     title: '鬼市地摊的锈铁片',
     category: 'market',
     description: '夜色下的青石坊市人声鼎沸，一个邋遢老修摊位角落摆着半截生锈断剑，标价仅 30 灵石，隐约透出一丝极淡的锋锐气息。',
     choices: [
+      {
+        id: 'swordshop_read_temper',
+        requiredOrigin: 'swordshop',
+        text: '借摊边的灯看剑脊上的回火纹',
+        successOutcome: { text: '剑坊师傅教过你这道纹。你顺着断口比划复原了剑式，谢过摊主才把剑放回原处。', expDelta: 45, atkDelta: 1 },
+      },
       {
         id: 'inspect_with_sense',
         text: '凝神探查其中玄机（检定：神识 ≥ 18）',
@@ -139,10 +149,17 @@ export const EVENTS: GameEvent[] = [
   },
   {
     id: 'evt_market_auction_gift',
+    regionId: 'heishan_market',
     title: '珍宝阁流拍奇物',
     category: 'market',
     description: '坊市珍宝阁正在清理无人竞拍的杂物箱，里面有一枚寒玉剑穗与一具合欢香囊，掌柜开价 100 灵石打包出售。',
     choices: [
+      {
+        id: 'ledger_trace_bids',
+        requiredOrigin: 'ledger',
+        text: '翻一翻流拍单，对照前三笔叫价',
+        successOutcome: { text: '三笔叫价的尾数一模一样，连笔迹也相同。你合上账页，把灵石收回袋里，记住了这家铺子的印记。', senseDelta: 1, expDelta: 20 },
+      },
       {
         id: 'buy_cold_jade',
         text: '花费 90 灵石单购寒玉剑穗（赠予沈清秋极佳）',
@@ -179,6 +196,7 @@ export const EVENTS: GameEvent[] = [
   },
   {
     id: 'evt_market_rogue_ambush',
+    regionId: 'heishan_market',
     title: '坊市外黑松林劫道',
     category: 'market',
     description: '刚出坊市十里，两名蒙面散修便从暗处祭出飞刀拦路：“道友收获颇丰，不如留下储物袋买命！”',
@@ -213,10 +231,17 @@ export const EVENTS: GameEvent[] = [
   // 3. 同门暗算 x3
   {
     id: 'evt_intrigue_poison_tea',
+    regionId: 'taixu_peak',
     title: '师兄的“贺礼灵茶”',
     category: 'sect_intrigue',
     description: '素来与你不睦的内门弟子赵无极笑吟吟端来一盏灵茶：“师弟近日进境神速，这杯碧螺春乃是我特地为你泡的。”',
     choices: [
+      {
+        id: 'clinic_recognize_tea',
+        requiredOrigin: 'clinic',
+        text: '借着闻茶香，辨一辨那股熟悉的药味',
+        successOutcome: { text: '小时候替药庐翻晒过的苦草，就是这个味道。你把茶留在桌上，另倒了一杯清水。', senseDelta: 1, expDelta: 15 },
+      },
       {
         id: 'detect_poison',
         text: '暗运神识察觉茶汤异样（检定：神识 ≥ 20）',
@@ -245,6 +270,7 @@ export const EVENTS: GameEvent[] = [
   },
   {
     id: 'evt_intrigue_mission_sabotage',
+    regionId: 'taixu_peak',
     title: '宗门任务暗箭难防',
     category: 'sect_intrigue',
     description: '执行巡山清剿任务时，原本该策应你的同门突然撤走阵旗，将你独自困在一群嗜血妖狼的包围圈中！',
@@ -276,6 +302,7 @@ export const EVENTS: GameEvent[] = [
   },
   {
     id: 'evt_intrigue_puppet_spy',
+    regionId: 'taixu_peak',
     title: '山门外魔宗暗桩',
     category: 'sect_intrigue',
     minRealmIndex: 4,
@@ -305,6 +332,7 @@ export const EVENTS: GameEvent[] = [
   {
     id: 'evt_shura_sword_demon',
     title: '修罗场 · 剑影与绯月',
+    requiredPartners: ['shen_qingqiu', 'ye_liuli'],
     category: 'shura_field',
     description: '你刚从太虚剑宗议事归来，迎面却见夜琉璃正巧笑嫣然地替你整理衣领——而十丈之外，手握长剑的沈清秋正冷冷注视着这一幕，周身寒霜凝结！',
     choices: [
@@ -345,6 +373,7 @@ export const EVENTS: GameEvent[] = [
   {
     id: 'evt_shura_elixir_scent',
     title: '修罗场 · 药庐里的脂粉香',
+    requiredPartners: ['lin_waner', 'ye_liuli'],
     category: 'shura_field',
     description: '林婉儿正端着亲手熬制的补气汤走近你，鼻尖忽然微微一动：“咦？师兄袖口这股合欢花的冷香……是从哪位仙子身上沾来的？”她笑容越发温柔，手里却悄悄多了一把银针。',
     choices: [
@@ -378,6 +407,7 @@ export const EVENTS: GameEvent[] = [
   {
     id: 'evt_shura_moonlight_duel',
     title: '双姝夜访洞府',
+    requiredPartners: ['shen_qingqiu', 'ye_liuli'],
     category: 'shura_field',
     description: '月圆之夜，沈清秋送来一柄寒玉剑穗，恰逢夜琉璃翻窗而入递上合欢香囊，三人齐聚狭小洞府，空气瞬间凝结！',
     choices: [
@@ -502,7 +532,10 @@ export const EVENTS: GameEvent[] = [
   // 6. 仙途奇遇 / 专属互动 x3
   {
     id: 'evt_shen_sword_cliff',
+    regionId: 'taixu_peak',
     title: '剑崖论道 · 霜雪初融',
+    requiredCharId: 'shen_qingqiu',
+    minAffection: 20,
     category: 'encounter',
     description: '大雪纷飞的太虚剑崖之上，沈清秋独自站在悬崖边擦拭佩剑，见你走来，难得开口邀你共参一式剑意。',
     choices: [
@@ -534,7 +567,10 @@ export const EVENTS: GameEvent[] = [
   },
   {
     id: 'evt_ye_moon_pavilion',
+    regionId: 'feiyue_palace',
     title: '绯月阁夜宴',
+    requiredCharId: 'ye_liuli',
+    minAffection: 35,
     category: 'encounter',
     description: '合欢宗圣女夜琉璃设下灵果夜宴邀你小酌，纱幔轻垂间幽香浮动，她执起玉杯笑盈盈望着你。',
     choices: [
@@ -567,7 +603,10 @@ export const EVENTS: GameEvent[] = [
   },
   {
     id: 'evt_lin_elixir_trial',
+    regionId: 'yaowang_valley',
     title: '药王谷开炉试丹',
+    requiredCharId: 'lin_waner',
+    minAffection: 14,
     category: 'encounter',
     description: '林婉儿正在药庐炼制一炉玄阶灵丹，炉火将成之际忽然灵气暴走，她额头渗出细汗向你投来求助的目光。',
     choices: [

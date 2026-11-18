@@ -7,6 +7,7 @@ interface InventoryAndSkillsPanelProps {
   items: ItemConfig[];
   skills: SkillTag[];
   onUseItem: (item: ItemConfig) => void;
+  workshopProducts: ReadonlySet<string>;
   onBuyItem: (item: ItemConfig) => void;
   onToggleEquipSkill: (skillId: string) => void;
 }
@@ -17,6 +18,7 @@ export const InventoryAndSkillsPanel: React.FC<InventoryAndSkillsPanelProps> = (
   skills,
   onUseItem,
   onBuyItem,
+  workshopProducts,
   onToggleEquipSkill,
 }) => {
   const [tab, setTab] = useState<'skills' | 'bag' | 'market'>('skills');
@@ -155,7 +157,7 @@ export const InventoryAndSkillsPanel: React.FC<InventoryAndSkillsPanelProps> = (
 
       {tab === 'market' && (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-h-64 overflow-y-auto pr-1">
-          {items.map((item) => {
+          {items.filter(item => !workshopProducts.has(item.id) && !item.id.startsWith('crafted_')).map((item) => {
             const affordable = player.spiritStones >= item.price;
             return (
               <div

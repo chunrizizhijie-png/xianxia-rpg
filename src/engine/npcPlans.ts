@@ -1,3 +1,4 @@
+import { activeCraftOrder } from './crafting';
 import { NPC_PROFILES } from '../data/npcProfiles';
 import { WORLD_REGIONS } from '../data/worldSandbox';
 import type { CharacterData, CharacterRuntimeState, PlayerState } from '../types/game';
@@ -59,7 +60,7 @@ export function npcDecisionOptions(
     options.cancel = `取消已安排的「${pending.npcTask?.subject}」。只有双方明确说要取消、或你因当前谈话有理由收回承诺时才选。`;
     return options;
   }
-  if (!status || status.canIntervene && status.interveneType === 'rescue' ||
+  if (!runtime.met || !runtime.hasContact || activeCraftOrder(journey, character.id) || !status || status.canIntervene && status.interveneType === 'rescue' ||
       (status.recoverUntilDay ?? 0) >= journey.day ||
       relationshipFor(journey, character.id, runtime).label === '有隔阂') return options;
   options.inquire = `有人请你查证一件具体的事，或你发现线索值得查。你可以${NPC_PROFILES[character.id]?.inquiry ?? '向熟悉当地的人打听'}，查后传音。`;

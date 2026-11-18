@@ -13,6 +13,7 @@ export interface NpcRelationship {
 }
 
 export function relationshipFor(journey: JourneyState, charId: string, runtime?: CharacterRuntimeState): NpcRelationship {
+  if (!runtime?.met) return { label: '素未谋面', inviteReason: '先当面结识', dualReason: '先当面结识' };
   const memories = journey.memories[charId] ?? [];
   const trust = memories.reduce((sum, memory) => sum + (trustWeight[memory.kind] ?? 0), 0);
   const explainedAbsence = memories.some((memory) => memory.id === 'herb-apology');

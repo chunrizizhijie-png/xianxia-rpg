@@ -73,3 +73,7 @@ export function findDestinyTrait(id: string): DestinyTrait | undefined {
     modifiers: { ...base.modifiers, [origin[2]]: origin[3], [habit[2]]: habit[3] },
   };
 }
+
+export function hasOrigin(traits: string[], origin?: string): boolean {
+  return !origin || traits.some(id => id.startsWith('birth:') && id.split(':')[2] === origin);
+}

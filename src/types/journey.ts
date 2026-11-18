@@ -1,4 +1,5 @@
 import type { NpcWorldStatus } from '../data/worldSandbox';
+import type { CraftState } from '../engine/crafting';
 
 export type MemoryKind =
   | 'promise' | 'help' | 'decline' | 'absence' | 'witness'
@@ -59,6 +60,8 @@ export interface NpcChatThread {
 }
 
 export interface JourneyState {
+  craft?: CraftState;
+  clearedSites?: string[];
   day: number;
   seed: number;
   regionId: string;

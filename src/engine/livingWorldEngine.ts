@@ -3,6 +3,8 @@ import { EXTRA_CHARACTERS, NpcWorldStatus, WORLD_REGIONS } from '../data/worldSa
 import { REALMS } from '../data/realms';
 import { NPC_PROFILES } from '../data/npcProfiles';
 import { ENEMIES } from '../data/itemsAndSkills';
+import { activeCraftOrder } from './crafting';
+import type { CharacterRuntimeState } from '../types/game';
 import { RETREAT_CALLS } from '../data/retreatCalls';
 import type { JourneyState } from '../types/journey';
 import { getHerbTrip, HERBALIST, HERB_VALLEY, settleHerbJourney } from './herbJourney';
@@ -361,6 +363,11 @@ function scheduledStop(charId: string, day: number, seed: number) {
 }
 
 function applyAgenda(journey: JourneyState, status: NpcWorldStatus): NpcWorldStatus {
+  const order = activeCraftOrder(journey, status.charId);
+  if (order) return {
+    ...status, regionId: order.regionId, activityText: '正在替你照料这份委托', canIntervene: false,
+    activityKey: 'craft-order', availableUntilDay: order.dueDay,
+  };
   if (status.isCompanion) {
     return {
       ...status,
@@ -516,6 +523,7 @@ export function findRetreatInterruption(
   characters: CharacterData[],
   player: PlayerState,
   plannedDays: number,
+  charactersState: Record<string, CharacterRuntimeState>,
 ): { day: number; event: GameEvent } | undefined {
   const seen = journey.retreatNotices ?? [];
   const day = Math.max(journey.day + 18 + (journey.seed % 9),
@@ -524,7 +532,7 @@ export function findRetreatInterruption(
   if (day >= end) return;
 
   const pending = RETREAT_CALLS.filter((call) => !seen.includes(call.id) &&
-    characters.some((character) => character.id === call.charId));
+    characters.some((character) => character.id === call.charId && charactersState[character.id]?.hasContact && !activeCraftOrder(journey, character.id)));
   const regional = pending.filter((call) => call.regionId === journey.regionId);
   const available = regional.length ? regional : pending;
   const call = available[(journey.seed + journey.day) % available.length];
@@ -561,7 +569,7 @@ export function findRetreatInterruption(
     const state = refreshNpcAgendas(settleHerbJourney({ ...journey, day: current }).next);
     const candidate = characters.find((character) => {
       const status = state.npcStatuses[character.id];
-      return status?.canIntervene && status.regionId === journey.regionId &&
+      return charactersState[character.id]?.met && status?.canIntervene && status.regionId === journey.regionId &&
         status.interveneType === 'rescue' && !rescueAlreadySent(state, character.id);
     });
     if (candidate) {
@@ -575,7 +583,8 @@ export function simulateWorldTick(
   characters: CharacterData[],
   player: PlayerState,
   elapsedDays: number,
-  allowUrgent = true,
+  allowUrgent: boolean,
+  charactersState: Record<string, CharacterRuntimeState>,
 ): { nextJourney: JourneyState; worldRumors: string[]; proactiveEvent?: GameEvent } {
   const advanced = settleHerbJourney({ ...journey, day: journey.day + elapsedDays });
   let nextJourney = advanced.next;
@@ -604,7 +613,8 @@ export function simulateWorldTick(
   if (pick) {
     const status = newStatuses[pick.id];
     const region = WORLD_REGIONS.find((item) => item.id === status.regionId);
-    if (status.regionId === nextJourney.regionId && status.interveneType !== 'rescue' &&
+    if (charactersState[pick.id]?.hasContact && charactersState[pick.id].affection >= 25 &&
+        status.regionId === nextJourney.regionId && status.interveneType !== 'rescue' &&
         pick.proactiveVisitEvents?.length) {
       worldRumors.push(`有人带来口信，${pick.name}在附近办事，想与你叙谈一会儿。`);
     } else {
@@ -620,7 +630,7 @@ export function simulateWorldTick(
   const urgent = newActivities.find((character) => {
     const status = newStatuses[character.id];
     const region = WORLD_REGIONS.find((item) => item.id === status.regionId);
-    return status.regionId === nextJourney.regionId && status.interveneType === 'rescue' &&
+    return charactersState[character.id]?.met && status.regionId === nextJourney.regionId && status.interveneType === 'rescue' &&
       player.realmIndex >= (region?.minRealmIndex ?? 0);
   });
   if (!urgent) return { nextJourney, worldRumors };

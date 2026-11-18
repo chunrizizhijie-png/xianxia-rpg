@@ -40,7 +40,12 @@ export interface SynergyBond {
   defMult: number;
   critBonus: number;
   cultivationBonus: number;
-  extraEffectText: string;
+  swordIntentGain?: number;
+  swordStrikeMult?: number;
+  dualExpBonus?: number;
+  lifestealBonus?: number;
+  poisonBonus?: number;
+  stunBonus?: number;
 }
 
 export interface NpcWorldStatus {
@@ -215,19 +220,20 @@ export const SYNERGY_BONDS: SynergyBond[] = [
     defMult: 0,
     critBonus: 0.1,
     cultivationBonus: 0,
-    extraEffectText: '出剑附带破甲锋芒',
+    swordIntentGain: 1,
   },
   {
     id: 'syn_sword_3',
     name: '万剑诛仙 (剑道×3)',
     category: 'sword',
     requiredCount: 3,
-    description: '装配 ≥3 门剑道功法：人剑合一，总攻击 +34%，暴击率 +20%，每回合剑罡自动斩击。',
+    description: '总攻击 +34%、防御 +10%、暴击率 +20%、吐纳倍率 +0.1。保留额外剑意，每回合剑罡再造成攻击 35% 的伤害。',
     atkMult: 0.34,
     defMult: 0.1,
     critBonus: 0.2,
     cultivationBonus: 0.1,
-    extraEffectText: '剑阵护体，攻守兼备',
+    swordIntentGain: 1,
+    swordStrikeMult: 0.35,
   },
   {
     id: 'syn_yinyang_2',
@@ -239,7 +245,7 @@ export const SYNERGY_BONDS: SynergyBond[] = [
     defMult: 0.15,
     critBonus: 0.05,
     cultivationBonus: 0.28,
-    extraEffectText: '吐纳生生不息',
+    dualExpBonus: 0.25,
   },
   {
     id: 'syn_blood_2',
@@ -251,7 +257,7 @@ export const SYNERGY_BONDS: SynergyBond[] = [
     defMult: 0,
     critBonus: 0.1,
     cultivationBonus: 0.05,
-    extraEffectText: '狂暴杀伐气场',
+    lifestealBonus: 0.15,
   },
   {
     id: 'syn_alchemy_2',
@@ -263,7 +269,7 @@ export const SYNERGY_BONDS: SynergyBond[] = [
     defMult: 0.2,
     critBonus: 0,
     cultivationBonus: 0.18,
-    extraEffectText: '丹毒侵蚀加深',
+    poisonBonus: 0.5,
   },
   {
     id: 'syn_thunder_2',
@@ -275,9 +281,23 @@ export const SYNERGY_BONDS: SynergyBond[] = [
     defMult: 0,
     critBonus: 0.15,
     cultivationBonus: 0,
-    extraEffectText: '雷威震慑群邪',
+    stunBonus: 0.1,
   },
 ];
+
+export function equippedSchools(equipped: string[], skills: SkillTag[]) {
+  const counts: Partial<Record<SynergyBond['category'], number>> = {};
+  for (const id of new Set(equipped)) {
+    const skill = skills.find((entry) => entry.id === id);
+    if (skill) counts[skill.category] = (counts[skill.category] ?? 0) + 1;
+  }
+  const active = SYNERGY_BONDS.filter((bond) => {
+    const count = counts[bond.category] ?? 0;
+    return count >= bond.requiredCount && !SYNERGY_BONDS.some((other) =>
+      other.category === bond.category && other.requiredCount > bond.requiredCount && count >= other.requiredCount);
+  });
+  return { counts, active };
+}
 
 export const EXTRA_CHARACTERS: CharacterData[] = [
   {
