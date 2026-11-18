@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const { rollBirthDraft, rollCraftTalents, loadBirthDraft, finishBirthDraft } = require('../src/engine/birth.ts');
 const { createInitialPlayer, getEffectiveCombatStats, getEffectiveCultivationMult, initBattle,
-  executeBattleTurn, BASIC_STRIKE } = require('../src/engine/gameEngine.ts');
+  executeBattleTurn, BASIC_STRIKE, grantBattleRewards } = require('../src/engine/gameEngine.ts');
 const { SKILLS, ENEMIES } = require('../src/data/itemsAndSkills.ts');
 const { equippedSchools } = require('../src/data/worldSandbox.ts');
 
@@ -65,4 +65,15 @@ test('higher sword tier replaces lower tier and delivers a logged follow-up stri
   assert.ok(battle.nextBattle.logs.some((line) => line.text.includes('剑罡追斩')));
   assert.equal(battle.nextBattle.playerSwordIntent, 2);
   assert.ok(getEffectiveCultivationMult(player, SKILLS) > getEffectiveCultivationMult({ ...player, equippedSkills: [] }, SKILLS));
+});
+
+test('victory rewards include the enemy drop and a single win', () => {
+  const player = createInitialPlayer('林玄', 'five_elements', []);
+  const enemy = ENEMIES.find(entry => entry.id === 'realm_golem');
+  const rewarded = grantBattleRewards(player, enemy);
+  assert.equal(rewarded.inventory.golden_core_pill, 1);
+  assert.equal(rewarded.stats.battlesWon, 1);
+  assert.equal(rewarded.exp, player.exp + enemy.rewardExp);
+  assert.equal(rewarded.spiritStones, player.spiritStones + enemy.rewardStones);
+  assert.equal(player.inventory.golden_core_pill, undefined);
 });

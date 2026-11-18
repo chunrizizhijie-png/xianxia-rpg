@@ -468,6 +468,8 @@ export function refreshNpcAgendas(journey: JourneyState): JourneyState {
 export function getNpcAgendaReply(journey: JourneyState, charId: string): string {
   const status = journey.npcStatuses[charId];
   if (!status) return '「我这两日还想多走几处。待定下来再告诉你。」';
+  const order = activeCraftOrder(journey, charId);
+  if (order) return `「还得守着这一炉。第 ${order.dueDay} 日可以来取。」`;
   if (status.isCompanion) return '「我今日跟你走。往哪处去，你先说。」';
   if ((status.recoverUntilDay ?? 0) >= journey.day) {
     return '「气还没理顺。门外有一壶茶，你先喝，我过两日再见客。」';

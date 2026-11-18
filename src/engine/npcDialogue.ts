@@ -20,6 +20,7 @@ import {
   replyToHerbInvite,
 } from './herbJourney';
 import { getNpcAgendaReply, refreshNpcAgendas } from './livingWorldEngine';
+import { activeCraftOrder } from './crafting';
 
 export type DialogueChoice = {
   label: string;
@@ -84,6 +85,12 @@ function herbGreeting(journey: JourneyState, nearby: boolean): string | undefine
   }
 }
 
+function canTakeHerbTrip(journey: JourneyState): boolean {
+  const order = activeCraftOrder(journey, HERBALIST);
+  const departureDay = journey.herb.phase === 'available' ? journey.day + 2 : journey.day;
+  return !order || order.dueDay <= departureDay;
+}
+
 const arrivals: Record<string, [string, string]> = {
   shen_qingqiu: ['负剑的修士', '她把剑尖转向地面，抱拳还礼。「太虚剑宗，沈清秋。道友怎么称呼？」'],
   ye_liuli: ['捧着茶盏的修士', '她把茶盏搁回桌上。「问我的名字？夜琉璃。还没请教你的道号。」'],
@@ -133,10 +140,10 @@ export function openConversation({ character, runtime, player, journey }: Dialog
 
   const choices: DialogueChoice[] = [];
   if (nearby && !runtime.hasContact) choices.push({ action: 'exchange', label: '询问能否留下传音印记' });
-  if (nearby && character.id === HERBALIST && journey.herb.phase === 'available') {
+  if (nearby && character.id === HERBALIST && journey.herb.phase === 'available' && canTakeHerbTrip(journey)) {
     choices.push({ action: 'herb', label: '问她药庐为何在找人进山' });
   }
-  if (nearby && character.id === HERBALIST && isHerbMeetingOpen(journey)) {
+  if (nearby && character.id === HERBALIST && isHerbMeetingOpen(journey) && canTakeHerbTrip(journey)) {
     choices.push({ action: 'herb', label: '按约赴会，随她进山采药' });
   }
   if (character.id === HERBALIST && journey.herb.phase === 'promised' &&
@@ -281,6 +288,7 @@ export function chooseDialogue(
       };
     }
     case 'herb': {
+      if (!canTakeHerbTrip(journey)) return result('「这一炉还离不开人，等收火了再说进山的事。」');
       if (isHerbMeetingOpen(journey)) {
         return result(
           `山涧扑来一股生冷水气。林婉儿停在路口，把药篓从左肩换到右肩。${getHerbTrip(journey).obstacle}「前面走不通。你想留下看看，还是随我从后坡绕过去？」`,
@@ -297,6 +305,7 @@ export function chooseDialogue(
     case 'promise':
     case 'decline': {
       const accept = choice.action === 'promise';
+      if (accept && !canTakeHerbTrip(journey)) return result('「进山的时辰得再定。我眼下走不开。」');
       const next = replyToHerbInvite(journey, accept);
       const changedPlans = journey.herb.phase === 'promised';
       const answer = result(accept
@@ -317,6 +326,7 @@ export function chooseDialogue(
       };
     case 'investigate':
     case 'detour': {
+      if (!canTakeHerbTrip(journey)) return result('「炉火还没收。山涧那边先别急着去。」');
       const next = completeHerbTrip(journey, choice.action);
       if (next === journey) return result('约好的时辰已经过了。林婉儿不在山道边。');
       const trip = getHerbTrip(journey);

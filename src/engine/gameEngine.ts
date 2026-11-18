@@ -579,6 +579,18 @@ export function autoBattleSkill(battle: BattleState, player: PlayerState, skills
     ready.find((s) => s.id !== 'basic_sword') ?? ready[0] ?? BASIC_STRIKE;
 }
 
+export function grantBattleRewards(player: PlayerState, enemy: EnemyConfig): PlayerState {
+  const inventory = { ...player.inventory };
+  if (enemy.rewardItemId) inventory[enemy.rewardItemId] = (inventory[enemy.rewardItemId] ?? 0) + 1;
+  return {
+    ...player,
+    exp: player.exp + enemy.rewardExp,
+    spiritStones: player.spiritStones + enemy.rewardStones,
+    inventory,
+    stats: { ...player.stats, battlesWon: player.stats.battlesWon + 1 },
+  };
+}
+
 export function executeBattleTurn(
   battle: BattleState,
   player: PlayerState,
@@ -789,23 +801,11 @@ export function executeBattleTurn(
       tone: 'victory',
     });
 
-    const inv = { ...player.inventory };
-    if (battle.enemy.rewardItemId) {
-      inv[battle.enemy.rewardItemId] = (inv[battle.enemy.rewardItemId] ?? 0) + 1;
-    }
-
-    const nextPlayer: PlayerState = {
+    const nextPlayer = grantBattleRewards({
       ...player,
       hp: nextPlayerHp,
       mp: Math.min(player.maxMp, nextPlayerMp + 18),
-      exp: player.exp + battle.enemy.rewardExp,
-      spiritStones: player.spiritStones + battle.enemy.rewardStones,
-      inventory: inv,
-      stats: {
-        ...player.stats,
-        battlesWon: player.stats.battlesWon + 1,
-      },
-    };
+    }, battle.enemy);
 
     return {
       nextBattle: {

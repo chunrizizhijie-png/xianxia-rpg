@@ -4,8 +4,9 @@ const {
   CRAFT_ITEMS, RECIPES, activeCraftOrder, applyCraftAction, craftTalent, isCraftState,
 } = require('../src/engine/crafting.ts');
 const { ITEMS } = require('../src/data/itemsAndSkills.ts');
-const { ALL_CHARACTERS, initializeJourney } = require('../src/engine/livingWorldEngine.ts');
+const { ALL_CHARACTERS, initializeJourney, refreshNpcAgendas, getNpcAgendaReply } = require('../src/engine/livingWorldEngine.ts');
 const { createInitialPlayer, createInitialCharacters } = require('../src/engine/gameEngine.ts');
+const { openConversation, chooseDialogue } = require('../src/engine/npcDialogue.ts');
 
 function context() {
   const talents = { alchemy: 1, smithing: 0 };
@@ -109,4 +110,23 @@ test('a commission is declined without spending anything when time, supplies or 
     assert.equal(rejected.journey, input.journey);
     assert.equal(rejected.materials, input.materials);
   }
+});
+
+test('Lin can agree to gather herbs only when her commission will be finished before departure', () => {
+  const ctx = context();
+  const id = 'lin_waner';
+  const runtime = { ...ctx.charStates[id], met: true };
+  const character = ALL_CHARACTERS.find(entry => entry.id === id);
+  const dialogue = recipe => {
+    const order = applyCraftAction(ctx, craft('make', recipe, id));
+    assert.equal(order.ok, true, order.message);
+    return { character, runtime, player: order.player, journey: refreshNpcAgendas(order.journey) };
+  };
+  const longOrder = dialogue('foundation_pill');
+  assert.ok(!openConversation(longOrder).choices.some(choice => choice.action === 'herb'));
+  assert.equal(chooseDialogue(longOrder, { action: 'promise' }).journey.herb.phase, 'available');
+  assert.match(getNpcAgendaReply(longOrder.journey, id), /第 4 日可以来取/);
+  const finishesBeforeDeparture = dialogue('heart_guard_pill');
+  assert.ok(openConversation(finishesBeforeDeparture).choices.some(choice => choice.action === 'herb'));
+  assert.equal(chooseDialogue(finishesBeforeDeparture, { action: 'promise' }).journey.herb.phase, 'promised');
 });

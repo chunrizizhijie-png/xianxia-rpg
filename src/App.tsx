@@ -60,6 +60,7 @@ import {
   generateEpitaph,
   getEffectiveCombatStats,
   getEffectiveCultivationMult,
+  grantBattleRewards,
   initBattle,
   interactWithCharacter,
   resolveEventOutcome,
@@ -98,7 +99,7 @@ import { EventModal } from './components/EventModal';
 import { BattlePanel } from './components/BattlePanel';
 import { ImmortalBondPanel } from './components/ImmortalBondPanel';
 import { InventoryAndSkillsPanel } from './components/InventoryAndSkillsPanel';
-import { applyCraftAction, CRAFT_ITEMS, RECIPES, type CraftAction } from './engine/crafting';
+import { activeCraftOrder, applyCraftAction, CRAFT_ITEMS, RECIPES, type CraftAction } from './engine/crafting';
 import { CraftingPanel } from './components/CraftingPanel';
 import { SandboxHubPanel } from './components/SandboxHubPanel';
 import { SettingsAndHotReloadModal } from './components/SettingsAndHotReloadModal';
@@ -570,14 +571,16 @@ export default function App() {
 
   const handleCastSkill = (skillId: string) => {
     if (!battle) return;
-    const { nextBattle, nextPlayer } = executeBattleTurn(
+    const { nextBattle, nextPlayer: afterTurn } = executeBattleTurn(
       battle,
       player,
       skillDefs,
       skillId
     );
 
-    const companionEntry = Object.values(npcStatuses).find((n) => n.isCompanion);
+    let nextPlayer = afterTurn;
+    const companionEntry = Object.values(npcStatuses).find((npc) =>
+      npc.isCompanion && npc.regionId === currentRegionId && !activeCraftOrder(journey, npc.charId));
     if (
       companionEntry &&
       !nextBattle.finished &&
@@ -598,8 +601,7 @@ export default function App() {
         if (afterAssistHp <= 0) {
           nextBattle.finished = true;
           nextBattle.victory = true;
-          nextPlayer.exp += nextBattle.enemy.rewardExp;
-          nextPlayer.spiritStones += nextBattle.enemy.rewardStones;
+          nextPlayer = grantBattleRewards(nextPlayer, nextBattle.enemy);
           nextBattle.logs.push({
             id: `comp_win_${Date.now()}`,
             turn: nextBattle.turn,
