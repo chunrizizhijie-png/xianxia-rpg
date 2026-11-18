@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { hasOrigin } from '../data/destinies';
 import { Compass, CheckCircle2, AlertTriangle, X } from 'lucide-react';
 import { EventChoice, GameEvent, PlayerState } from '../types/game';
 import { checkEventStat } from '../engine/gameEngine';
@@ -68,7 +69,7 @@ export function EventModal({
             </div>
           ) : (
             <div className="space-y-2.5">
-              {event.choices.map((choice) => {
+              {event.choices.filter(choice => hasOrigin(player.destinyTraits, choice.requiredOrigin)).map((choice) => {
                 const passed = checkEventStat(player, choice.check);
                 return (
                   <button key={choice.id} type="button" onClick={() => onSelectChoice(choice)}

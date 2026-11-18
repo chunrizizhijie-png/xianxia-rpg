@@ -1,6 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import { Swords, Shield, Play, Pause, Sparkles, Flame } from 'lucide-react';
 import { BattleState, PlayerState, SkillTag } from '../types/game';
+import { autoBattleSkill, BASIC_STRIKE, FOCUS_BREATH, pendingEnemyStrike } from '../engine/gameEngine';
 
 interface BattlePanelProps {
   battle: BattleState;
@@ -28,45 +29,12 @@ export const BattlePanel: React.FC<BattlePanelProps> = ({
   useEffect(() => {
     if (!battle.autoMode || battle.finished) return;
     const timer = setTimeout(() => {
-      const equipped = player.equippedSkills
-        .map((id) => skills.find((s) => s.id === id))
-        .filter((s): s is SkillTag => Boolean(s));
-
-      // Smart tactical AI: if sword intent >= 3, prioritize finisher; otherwise highest usable skill
-      const finisher = equipped.find(
-        (s) =>
-          s.consumeSwordIntent &&
-          battle.playerSwordIntent >= 2 &&
-          player.mp >= s.mpCost &&
-          (battle.skillCooldowns[s.id] ?? 0) === 0
-      );
-
-      const usable =
-        finisher ??
-        equipped.find(
-          (s) =>
-            s.id !== 'basic_sword' &&
-            player.mp >= s.mpCost &&
-            (battle.skillCooldowns[s.id] ?? 0) === 0
-        ) ??
-        equipped[0] ??
-        skills[0];
-
-      if (usable) onCastSkill(usable.id);
+      onCastSkill(autoBattleSkill(battle, player, skills).id);
     }, 650);
     return () => clearTimeout(timer);
-  }, [
-    battle.autoMode,
-    battle.turn,
-    battle.finished,
-    player.mp,
-    battle.skillCooldowns,
-    battle.playerSwordIntent,
-    player.equippedSkills,
-    skills,
-    onCastSkill,
-  ]);
+  }, [battle, player, skills, onCastSkill]);
 
+  const threat = !battle.finished && pendingEnemyStrike(battle.enemy, battle.turn);
   const enemyHpPct = Math.max(
     0,
     Math.min(100, (battle.enemyHp / battle.enemyMaxHp) * 100)
@@ -169,6 +137,11 @@ export const BattlePanel: React.FC<BattlePanelProps> = ({
       </div>
 
       {/* Battle Log */}
+      {threat && (
+        <p role="status" className="rounded-lg border border-amber-700/60 bg-amber-950/30 p-3 text-sm text-amber-200">
+          {threat.windup?.cue} 本回合将施展【{threat.name}】。可护体承招、以麻痹打断，或抢先击倒对手。
+        </p>
+      )}
       <div className="xuan-panel rounded-xl p-3 h-52 overflow-y-auto space-y-2 text-xs">
         {battle.logs.map((line) => (
           <div
@@ -211,6 +184,16 @@ export const BattlePanel: React.FC<BattlePanelProps> = ({
         </div>
       ) : (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          <button type="button" onClick={() => onCastSkill(BASIC_STRIKE.id)}
+            className="text-left p-2.5 rounded-lg border border-stone-700 bg-[#12151b] hover:bg-[#1e232e]">
+            <strong className="block text-xs text-stone-200">{BASIC_STRIKE.name}</strong>
+            <span className="text-[10px] text-stone-400">耗灵 0 · 回合末回灵 8</span>
+          </button>
+          <button type="button" onClick={() => onCastSkill(FOCUS_BREATH.id)}
+            className="text-left p-2.5 rounded-lg border border-sky-900 bg-[#12151b] hover:bg-[#1e232e]">
+            <strong className="block text-xs text-sky-200">{FOCUS_BREATH.name}</strong>
+            <span className="text-[10px] text-stone-400">{FOCUS_BREATH.description}</span>
+          </button>
           {player.equippedSkills.map((sid) => {
             const skill = skills.find((s) => s.id === sid);
             if (!skill) return null;

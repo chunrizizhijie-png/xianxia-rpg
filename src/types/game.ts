@@ -179,6 +179,7 @@ export interface CharacterData {
 export interface CharacterRuntimeState {
   id: string;
   met: boolean;
+  hasContact?: boolean;
   affection: number;
   emotion: EmotionState;
   isSoulmate: boolean;
@@ -220,6 +221,7 @@ export interface EventOutcome {
 }
 
 export interface EventChoice {
+  requiredOrigin?: string;
   id: string;
   text: string;
   check?: EventCheck;
@@ -239,9 +241,11 @@ export interface GameEvent {
   id: string;
   title: string;
   category: EventCategory;
+  regionId?: string;
   minRealmIndex?: number;
   maxRealmIndex?: number;
   requiredCharId?: string;
+  requiredPartners?: string[];
   minAffection?: number;
   description: string;
   choices: EventChoice[];
@@ -260,6 +264,7 @@ export interface EnemyConfig {
     name: string;
     damageMult: number;
     description: string;
+    windup?: { cue: string; everyTurns: number };
   }[];
   rewardExp: number;
   rewardStones: number;
@@ -267,10 +272,16 @@ export interface EnemyConfig {
   description: string;
 }
 
+export interface CraftTalents {
+  alchemy: number;
+  smithing: number;
+}
+
 export interface PlayerState {
   daoName: string;
   spiritRoot: SpiritRootType;
   destinyTraits: string[];
+  craftTalents?: CraftTalents;
   realmIndex: number;
   exp: number;
   ageMonths: number;

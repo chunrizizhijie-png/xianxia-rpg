@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Flame, ShieldAlert, Sparkles, X, HeartHandshake } from 'lucide-react';
 import { PlayerState, RealmConfig } from '../types/game';
 import {
+  breakthroughSetback,
   calculateBreakthroughRate,
   getRecommendedBreakthroughPill,
 } from '../engine/gameEngine';
@@ -33,6 +34,7 @@ export const BreakthroughModal: React.FC<BreakthroughModalProps> = ({
   const mainPillCount = player.inventory[recPill.pillId] ?? 0;
   const heartGuardCount = player.inventory.heart_guard_pill ?? 0;
   const dualBonus = player.nextBreakthroughBonus ?? 0;
+  const setback = breakthroughSetback(player, currentRealm, useHeartGuard && heartGuardCount > 0);
 
   const rate = calculateBreakthroughRate(
     player,
@@ -186,7 +188,7 @@ export const BreakthroughModal: React.FC<BreakthroughModalProps> = ({
         <div className="flex items-start gap-2 text-[11px] text-amber-300/85 bg-amber-950/30 border border-amber-500/25 rounded-lg p-2.5">
           <ShieldAlert className="w-4 h-4 shrink-0 mt-0.5" />
           <span>
-            若冲关失败，将损失 {Math.round(currentRealm.failureHpPenaltyPct * 100)}% 最大气血、增加 22% 内伤并折损 {currentRealm.failureLifespanPenaltyYears} 年寿元（服护心丹可减半）。
+            成功需两个月。若失败，调养需三个月，修为回落至 {setback.exp}，损失 {setback.hpLoss} 点气血，内伤升至 {setback.injury}，寿元上限减少 {setback.lifespanLoss} 年。
           </span>
         </div>
 

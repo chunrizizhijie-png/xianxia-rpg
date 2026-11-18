@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { strangerTitle } from '../engine/npcDialogue';
 import {
   Sparkles,
   Flame,
@@ -13,6 +14,7 @@ import {
   CraftMaterial,
   NpcWorldStatus,
   SYNERGY_BONDS,
+  equippedSchools,
   WORLD_REGIONS,
   WorldRegion,
 } from '../data/worldSandbox';
@@ -40,12 +42,7 @@ interface SandboxHubPanelProps {
   onBuyMaterial: (mat: CraftMaterial) => void;
   onCreateProceduralSkill: (name: string, category: SkillCategory) => void;
   onFuseSkills: (idA: string, idB: string) => void;
-  onForgeItems: (
-    matA: string,
-    matB: string,
-    mode: 'pill' | 'treasure',
-    customTitle: string
-  ) => void;
+  workshop: React.ReactNode;
   onInterveneNpc: (charId: string) => void;
   onTalk: (charId: string) => void;
   onToggleCompanion: (charId: string) => void;
@@ -65,7 +62,7 @@ export const SandboxHubPanel: React.FC<SandboxHubPanelProps> = ({
   onBuyMaterial,
   onCreateProceduralSkill,
   onFuseSkills,
-  onForgeItems,
+  workshop,
   onInterveneNpc,
   onTalk,
   onToggleCompanion,
@@ -75,20 +72,9 @@ export const SandboxHubPanel: React.FC<SandboxHubPanelProps> = ({
   const [customCategory, setCustomCategory] = useState<SkillCategory>('sword');
   const [fuseA, setFuseA] = useState(player.unlockedSkills[0] ?? 'basic_sword');
   const [fuseB, setFuseB] = useState(player.unlockedSkills[1] ?? 'basic_sword');
-  const [forgeMatA, setForgeMatA] = useState(CRAFT_MATERIALS[0].id);
-  const [forgeMatB, setForgeMatB] = useState(CRAFT_MATERIALS[1].id);
-  const [forgeMode, setForgeMode] = useState<'pill' | 'treasure'>('treasure');
-  const [forgeTitle, setForgeTitle] = useState('');
 
   // Count active school tags for Synergy Matrix
-  const equippedSkillObjs = player.equippedSkills
-    .map((id) => skills.find((s) => s.id === id))
-    .filter((s): s is SkillTag => Boolean(s));
-
-  const catCounts: Record<string, number> = {};
-  for (const s of equippedSkillObjs) {
-    catCounts[s.category] = (catCounts[s.category] ?? 0) + 1;
-  }
+  const schools = equippedSchools(player.equippedSkills, skills);
 
   const currentRegion =
     WORLD_REGIONS.find((r) => r.id === currentRegionId) ?? WORLD_REGIONS[0];
@@ -108,7 +94,7 @@ export const SandboxHubPanel: React.FC<SandboxHubPanelProps> = ({
             }`}
           >
             <Users className="w-3.5 h-3.5 text-pink-400" />
-            天机传闻 · 鲜活NPC生态
+            当地见闻 · 道友行踪
           </button>
 
           <button
@@ -134,7 +120,7 @@ export const SandboxHubPanel: React.FC<SandboxHubPanelProps> = ({
             }`}
           >
             <Hammer className="w-3.5 h-3.5 text-amber-400" />
-            丹器造化炉 · 自由炼制
+            丹器工坊 · 学艺与委托
           </button>
 
           <button
@@ -160,14 +146,26 @@ export const SandboxHubPanel: React.FC<SandboxHubPanelProps> = ({
       {subTab === 'npc_eco' && (
         <div className="space-y-3">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-h-80 overflow-y-auto pr-1">
+            {!characters.some((character) => charStates[character.id]?.met || npcStatuses[character.id]?.regionId === currentRegionId) &&
+              <p className="text-xs text-stone-400">今日此地少有行人。可到药王谷的药庐看看。</p>}
             {characters.map((c) => {
               const st = npcStatuses[c.id];
-              const aff = charStates[c.id]?.affection ?? 0;
+              const known = charStates[c.id]?.met;
+              const canWrite = charStates[c.id]?.hasContact;
               const relation = relationships[c.id];
               const realmName = REALMS[st?.realmIndex ?? 0]?.name ?? '炼气期';
               const region = WORLD_REGIONS.find((r) => r.id === st?.regionId);
               const local = st?.regionId === currentRegionId;
               const regionName = region?.name ?? '行踪未明';
+              if (!known && !local) return null;
+              if (!known) return (
+                <div key={c.id} className="xuan-panel rounded-xl p-3.5 space-y-2">
+                  <p className="text-sm text-stone-200">{strangerTitle(c)}</p>
+                  <p className="text-xs text-stone-400">{regionName} · {st?.activityText?.includes(c.name) ? '在此稍作停留' : st?.activityText}</p>
+                  <button type="button" disabled={!local && !canWrite} onClick={() => onTalk(c.id)} aria-label={`向${strangerTitle(c)}见礼`}
+                    className="rounded border border-[#c5a059]/40 px-3 py-2 text-xs text-[#e2c488]">上前见礼</button>
+                </div>
+              );
 
               return (
                 <div
@@ -202,14 +200,14 @@ export const SandboxHubPanel: React.FC<SandboxHubPanelProps> = ({
 
                   <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
                     <span className="text-[11px] text-pink-300">
-                      {st?.isCompanion ? '已结伴同行' : relation?.label} · 好感 {aff}
+                      {st?.isCompanion ? '已结伴同行' : relation?.label}
                     </span>
 
                     <div className="flex flex-wrap gap-1.5">
                       <button type="button" onClick={() => onTalk(c.id)}
                         aria-label={`与${c.name}${local ? '交谈' : '传音'}`}
                         className="rounded border border-[#c5a059]/40 px-2.5 py-1 text-xs text-[#e2c488]">
-                        {local ? '交谈' : '传音'}
+                        {local ? '交谈' : canWrite ? '传音' : '尚无传音印记'}
                       </button>
                       {!local && region && player.realmIndex >= region.minRealmIndex && (
                         <button type="button" onClick={() => onTravelRegion(region)}
@@ -228,7 +226,7 @@ export const SandboxHubPanel: React.FC<SandboxHubPanelProps> = ({
                       )}
                       {local && <button
                         type="button"
-                        disabled={Boolean(relation?.inviteReason) && !st?.isCompanion}
+                        disabled={st?.activityKey === 'craft-order' || (Boolean(relation?.inviteReason) && !st?.isCompanion)}
                         title={st?.isCompanion ? undefined : relation?.inviteReason}
                         onClick={() => onToggleCompanion(c.id)}
                         className={`px-2.5 py-1 rounded text-[11px] border transition ${
@@ -259,13 +257,13 @@ export const SandboxHubPanel: React.FC<SandboxHubPanelProps> = ({
             <div className="flex items-center justify-between">
               <span className="text-xs font-bold text-[#e2c488] flex items-center gap-1.5">
                 <ShieldCheck className="w-4 h-4 text-[#c5a059]" />
-                万法流派羁绊矩阵（根据已装配功法自动激活）
+                流派羁绊 · 同流派取最高阶
               </span>
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
               {SYNERGY_BONDS.map((bond) => {
-                const count = catCounts[bond.category] ?? 0;
-                const active = count >= bond.requiredCount;
+                const count = schools.counts[bond.category] ?? 0;
+                const active = schools.active.includes(bond);
                 return (
                   <div
                     key={bond.id}
@@ -395,82 +393,12 @@ export const SandboxHubPanel: React.FC<SandboxHubPanelProps> = ({
       {subTab === 'forge' && (
         <div className="space-y-4">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div className="xuan-panel rounded-xl p-3.5 space-y-3">
-              <h4 className="text-xs font-bold text-[#e2c488]">
-                天地灵材自由配伍炉
-              </h4>
-              <div className="grid grid-cols-2 gap-2 text-xs">
-                <div>
-                  <label className="text-[11px] text-stone-400">主材</label>
-                  <select
-                    value={forgeMatA}
-                    onChange={(e) => setForgeMatA(e.target.value)}
-                    className="w-full mt-1 px-2 py-1.5 rounded bg-[#0f1115] border border-stone-700 text-stone-200"
-                  >
-                    {CRAFT_MATERIALS.map((m) => (
-                      <option key={m.id} value={m.id}>
-                        {m.name} (库存:{materials[m.id] ?? 0})
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label className="text-[11px] text-stone-400">辅材</label>
-                  <select
-                    value={forgeMatB}
-                    onChange={(e) => setForgeMatB(e.target.value)}
-                    className="w-full mt-1 px-2 py-1.5 rounded bg-[#0f1115] border border-stone-700 text-stone-200"
-                  >
-                    {CRAFT_MATERIALS.map((m) => (
-                      <option key={m.id} value={m.id}>
-                        {m.name} (库存:{materials[m.id] ?? 0})
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  maxLength={10}
-                  value={forgeTitle}
-                  onChange={(e) => setForgeTitle(e.target.value)}
-                  placeholder="自定法宝/灵丹名（可留空）"
-                  className="flex-1 px-2.5 py-1.5 rounded bg-[#0f1115] border border-stone-700 text-xs text-stone-100"
-                />
-                <select
-                  value={forgeMode}
-                  onChange={(e) => setForgeMode(e.target.value as 'pill' | 'treasure')}
-                  className="px-2 py-1.5 rounded bg-[#0f1115] border border-[#c5a059]/40 text-xs text-[#e2c488]"
-                >
-                  <option value="treasure">锻造本命法宝</option>
-                  <option value="pill">炼制极品奇丹</option>
-                </select>
-              </div>
-
-              <button
-                type="button"
-                disabled={
-                  (materials[forgeMatA] ?? 0) <= 0 ||
-                  (materials[forgeMatB] ?? 0) <= 0 ||
-                  (forgeMatA === forgeMatB && (materials[forgeMatA] ?? 0) < 2)
-                }
-                onClick={() => {
-                  onForgeItems(forgeMatA, forgeMatB, forgeMode, forgeTitle);
-                  setForgeTitle('');
-                }}
-                className="w-full py-2 rounded-lg bg-gradient-to-r from-[#b8893a] to-[#d6b26b] text-[#0f1115] font-bold text-xs disabled:opacity-40"
-              >
-                起火开炉 · 立即炼制
-              </button>
-            </div>
-
+            {workshop}
             <div className="xuan-panel rounded-xl p-3.5 space-y-2 max-h-56 overflow-y-auto">
               <h4 className="text-xs font-bold text-[#e2c488]">
-                灵材储备与直接采购
+                当地灵材铺
               </h4>
-              {CRAFT_MATERIALS.map((m) => (
+              {CRAFT_MATERIALS.filter(m => currentRegion.specialtyMaterials.includes(m.id)).map((m) => (
                 <div
                   key={m.id}
                   className="flex items-center justify-between text-xs py-1.5 border-b border-stone-800/80"

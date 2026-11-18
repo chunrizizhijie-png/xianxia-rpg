@@ -25,7 +25,8 @@ const offline = index
   .replace(/<link\b[^>]*\brel="stylesheet"[^>]*\bhref="([^"]+)"[^>]*>/g, (_, url) => {
     styles += 1;
     return `<style>\n${readAsset(url)}\n</style>`;
-  });
+  })
+  .replace(/\r+\n/g, '\n');
 
 if (scripts !== 1 || styles !== 1 || /<(?:script|link)\b[^>]*\b(?:src|href)="/i.test(offline)) {
   throw new Error('Unable to bundle all Vite entry assets into a single offline file.');

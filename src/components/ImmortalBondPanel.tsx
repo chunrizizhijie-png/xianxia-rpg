@@ -32,6 +32,7 @@ interface ImmortalBondPanelProps {
   ) => void;
   onTalk: (charId: string) => void;
   local: boolean;
+  atWork: boolean;
   relationship: NpcRelationship;
   onSparWithChar?: (charId: string) => void;
 }
@@ -47,6 +48,7 @@ export const ImmortalBondPanel: React.FC<ImmortalBondPanelProps> = ({
   onInteract,
   onTalk,
   local,
+  atWork,
   relationship,
   onSparWithChar,
 }) => {
@@ -71,11 +73,10 @@ export const ImmortalBondPanel: React.FC<ImmortalBondPanelProps> = ({
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h3 className="text-base font-bold text-[#e2c488] flex items-center gap-2">
           <HeartHandshake className="w-4 h-4 text-pink-400" />
-          仙缘洞府 · 红颜因果
+          道友名录
         </h3>
         <div className="flex flex-wrap gap-1.5">
           {characters.map((c) => {
-            const st = charStates[c.id];
             const isActive = c.id === activeChar.id;
             return (
               <button
@@ -88,7 +89,7 @@ export const ImmortalBondPanel: React.FC<ImmortalBondPanelProps> = ({
                     : 'bg-[#12151b] border-stone-800 text-stone-400 hover:text-stone-200'
                 }`}
               >
-                {c.name} ({st?.affection ?? 0})
+                {c.name}
               </button>
             );
           })}
@@ -112,7 +113,7 @@ export const ImmortalBondPanel: React.FC<ImmortalBondPanelProps> = ({
             ))}
           </div>
           <span className="text-xs font-semibold" style={{ color: stageInfo.color }}>
-            {relationship.label} · 好感 {activeState?.affection ?? 0}
+            {relationship.label}
           </span>
         </div>
 
@@ -123,7 +124,7 @@ export const ImmortalBondPanel: React.FC<ImmortalBondPanelProps> = ({
           )}
           <div>
             <p className="text-sm leading-relaxed text-stone-300">{activeChar.bio}</p>
-            <p className="mt-2 text-xs text-stone-400">{local ? '她此刻在附近' : '可用玉简传音'}</p>
+            <p className="mt-2 text-xs text-stone-400">{local ? '她此刻在附近' : activeState.hasContact ? '可用玉简传音' : '还没有交换传音印记'}</p>
           </div>
         </div>
 
@@ -148,11 +149,12 @@ export const ImmortalBondPanel: React.FC<ImmortalBondPanelProps> = ({
       <div className="grid grid-cols-1 sm:grid-cols-4 gap-2.5">
         <button
           type="button"
+          disabled={!local && !activeState.hasContact}
           onClick={() => onTalk(activeChar.id)}
           className="flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg bg-[#12151b] hover:bg-[#1d222c] border border-[#c5a059]/35 text-xs text-[#e2c488] font-semibold transition"
         >
           <MessageCircle className="w-4 h-4 text-sky-400" />
-          {local ? '当面交谈' : '玉简传音'}
+          {local ? '当面交谈' : activeState.hasContact ? '玉简传音' : '尚无传音印记'}
         </button>
 
         <div className="flex gap-1.5">
@@ -187,7 +189,7 @@ export const ImmortalBondPanel: React.FC<ImmortalBondPanelProps> = ({
         {onSparWithChar && (
           <button
             type="button"
-            disabled={!local}
+            disabled={!local || atWork}
             onClick={() => onSparWithChar(activeChar.id)}
             className="flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg bg-[#12151b] hover:bg-[#1d222c] border border-amber-500/35 text-xs text-amber-200 disabled:opacity-40 transition"
           >
@@ -204,7 +206,7 @@ export const ImmortalBondPanel: React.FC<ImmortalBondPanelProps> = ({
           className="flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg bg-gradient-to-r from-[#8b5cf6]/25 to-[#ec4899]/25 hover:brightness-125 border border-pink-400/40 disabled:opacity-40 text-xs text-pink-200 font-semibold transition"
         >
           <Sparkles className="w-4 h-4 text-pink-300" />
-          双修共鸣
+          {activeState.isSoulmate ? '与道侣共修' : '询问是否愿意结为道侣'}
         </button>
       </div>
     </div>

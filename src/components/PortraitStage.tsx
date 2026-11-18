@@ -313,9 +313,9 @@ export const PortraitStage: React.FC<PortraitStageProps> = ({
         <div className="flex items-center justify-between text-xs">
           <div className="flex items-center gap-1.5">
             <Heart className="w-3.5 h-3.5 text-pink-400 fill-pink-400/30" />
-            <span className="text-stone-400">好感度：</span>
+            <span className="text-stone-400">交情 · </span>
             <span className="font-semibold" style={{ color: affStage.color }}>
-              {runtime.affection} ({relationshipLabel})
+              {relationshipLabel}
             </span>
           </div>
           {runtime.isSoulmate && (

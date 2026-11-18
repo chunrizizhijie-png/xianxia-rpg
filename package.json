@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "check": "tsc --noEmit",
+    "test": "node --require ./scripts/test-typescript.cjs --test \"tests/*.test.cjs\"",
     "build": "tsc && vite build && node scripts/sync-offline.mjs",
     "preview": "vite preview"
   },

@@ -138,6 +138,7 @@ export function herbJournalLine(journey: JourneyState): string | undefined {
       ? `第 ${meetingDay} 日去药王谷药庐与林婉儿碰面。`
       : `林婉儿在药庐候你。最迟第 ${meetingDay + 1} 日可以赴约。`;
   }
+  if (phase === 'missed' && awaitsHerbApology(journey)) return '你错过了采药的约定。林婉儿已经回谷，见面或传音时可以向她解释。';
   if (resolvedDay === undefined && phase === 'declined') {
     return '你已提前推辞，林婉儿正另找帮手。';
   }

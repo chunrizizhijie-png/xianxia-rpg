@@ -301,7 +301,8 @@ export const ENEMIES: EnemyConfig[] = [
     sense: 10,
     skills: [
       { name: '裂爪扑杀', damageMult: 1.1, description: '妖狼腥风扑面，利爪撕裂虚空！' },
-      { name: '嗜血狂嗥', damageMult: 1.35, description: '妖狼双目赤红，发出震魂咆哮！' },
+      { name: '嗜血狂嗥', damageMult: 1.35, description: '妖狼发出一声震魂长嗥！',
+        windup: { cue: '妖狼退开半步，昂首吸气，喉间的血纹渐渐亮起。', everyTurns: 3 } },
     ],
     rewardExp: 70,
     rewardStones: 40,
@@ -373,7 +374,8 @@ export const ENEMIES: EnemyConfig[] = [
     sense: 65,
     skills: [
       { name: '玄金破岳锤', damageMult: 1.38, description: '机关傀儡双臂化锤，轰然砸碎青石地砖！' },
-      { name: '周天破法神光', damageMult: 1.68, description: '胸口核心暴闪，射出炽白破法光束！' },
+      { name: '周天破法神光', damageMult: 1.68, description: '胸口核心暴闪，射出炽白破法光束！',
+        windup: { cue: '金甲傀儡收拢双臂，胸甲缓缓分开，一线白光在核心汇聚。', everyTurns: 3 } },
     ],
     rewardExp: 640,
     rewardStones: 480,

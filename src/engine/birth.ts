@@ -1,19 +1,14 @@
 import { findDestinyTrait, rollDestiny } from '../data/destinies';
 import { DESTINY_TRAITS, SPIRIT_ROOTS } from '../data/realms';
-import type { DestinyTrait, SpiritRootType } from '../types/game';
+import type { CraftTalents, DestinyTrait, SpiritRootType } from '../types/game';
 
 export const MAX_BIRTH_TRAITS = 3;
-export const MAX_BIRTH_DRAWS = 3;
-export const BIRTH_DRAFT_KEY = 'xianxia_rpg_birth_session_v2';
+const BIRTH_DRAFT_KEY = 'xianxia_rpg_pending_birth_v3';
 
 export interface BirthDraft {
   root: SpiritRootType;
-  candidates: string[];
-}
-
-export interface BirthSession {
-  used: number;
-  draft: BirthDraft | null;
+  traits: string[];
+  craftTalents: CraftTalents;
 }
 
 const ROOT_WEIGHTS: Record<SpiritRootType, number> = { heavenly: 5, thunder_variant: 20, five_elements: 75 };
@@ -32,40 +27,47 @@ function chooseWeighted<T>(entries: T[], weight: (entry: T) => number, random: (
   return entries[entries.length - 1];
 }
 
-export function rollBirthDraft(random = Math.random, previous?: BirthDraft): BirthDraft {
-  const roots = SPIRIT_ROOTS.filter(({ id }) => id !== previous?.root);
-  const root = chooseWeighted(roots, (entry) => ROOT_WEIGHTS[entry.id], random).id;
-  const previousArchetypes = new Set(previous?.candidates.map((id) => id.startsWith('birth:') ? id.split(':')[1] : id));
-  let available = ARCHETYPES.filter(({ trait }) => !previousArchetypes.has(trait.id));
-  const candidates = Array.from({ length: 5 }, () => {
+export function rollCraftTalents(random = Math.random): CraftTalents {
+  return { alchemy: Math.floor(random() * 4), smithing: Math.floor(random() * 4) };
+}
+
+export function validCraftTalents(value: unknown): value is CraftTalents {
+  if (!value || typeof value !== 'object') return false;
+  const talents = value as Partial<CraftTalents>;
+  return [talents.alchemy, talents.smithing].every((n) => typeof n === 'number' && Number.isInteger(n) && n >= 0 && n <= 3);
+}
+
+export function rollBirthDraft(random = Math.random): BirthDraft {
+  const root = chooseWeighted(SPIRIT_ROOTS, (entry) => ROOT_WEIGHTS[entry.id], random).id;
+  let available = ARCHETYPES;
+  const traits = Array.from({ length: MAX_BIRTH_TRAITS }, (_, index) => {
     const picked = chooseWeighted(available, ({ weight }) => weight, random);
     available = available.filter((entry) => entry !== picked);
-    return rollDestiny(picked.trait, random);
+    // One upbringing per life. The other two dispositions keep their base modifiers.
+    return index === 0 ? rollDestiny(picked.trait, random) : picked.trait.id;
   });
-  return { root, candidates };
+  return { root, traits, craftTalents: rollCraftTalents(random) };
 }
 
-export function loadBirthSession(): BirthSession {
+let pendingBirth: BirthDraft | undefined;
+
+export function loadBirthDraft(): BirthDraft {
   try {
-    const saved: BirthSession | null = JSON.parse(sessionStorage.getItem(BIRTH_DRAFT_KEY) ?? 'null');
-    const draft = saved?.draft;
-    if (saved && Number.isInteger(saved.used) && saved.used >= 1 && saved.used <= MAX_BIRTH_DRAWS &&
-        draft && SPIRIT_ROOTS.some((root) => root.id === draft.root) &&
-        Array.isArray(draft.candidates) && draft.candidates.length === 5 &&
-        new Set(draft.candidates).size === 5 && draft.candidates.every(findDestinyTrait)) {
-      return saved;
+    const draft: BirthDraft | null = JSON.parse(localStorage.getItem(BIRTH_DRAFT_KEY) ?? 'null');
+    if (draft && SPIRIT_ROOTS.some((root) => root.id === draft.root) &&
+        Array.isArray(draft.traits) && draft.traits.length === MAX_BIRTH_TRAITS &&
+        new Set(draft.traits).size === MAX_BIRTH_TRAITS && draft.traits.every(findDestinyTrait) &&
+        validCraftTalents(draft.craftTalents)) {
+      pendingBirth = draft;
+      return draft;
     }
   } catch {}
-  return { used: 0, draft: null };
+  pendingBirth ??= rollBirthDraft();
+  try { localStorage.setItem(BIRTH_DRAFT_KEY, JSON.stringify(pendingBirth)); } catch {}
+  return pendingBirth;
 }
 
-export function drawBirth(session: BirthSession, random = Math.random): BirthSession {
-  if (session.used >= MAX_BIRTH_DRAWS) return session;
-  return { used: session.used + 1, draft: rollBirthDraft(random, session.draft ?? undefined) };
-}
-
-export function saveBirthSession(session: BirthSession) {
-  try {
-    sessionStorage.setItem(BIRTH_DRAFT_KEY, JSON.stringify(session));
-  } catch {}
+export function finishBirthDraft() {
+  pendingBirth = undefined;
+  try { localStorage.removeItem(BIRTH_DRAFT_KEY); } catch {}
 }
