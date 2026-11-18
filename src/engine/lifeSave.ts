@@ -17,7 +17,9 @@ function isOpenStory(value: unknown) {
     isRecord(entry) && typeof entry.id === 'string' && typeof entry.regionId === 'string' &&
     typeof entry.day === 'number' && Number.isSafeInteger(entry.day) && entry.day >= 1 &&
     typeof entry.text === 'string' && ['charId', 'action', 'fact'].every((key) =>
-      entry[key] === undefined || typeof entry[key] === 'string')));
+      entry[key] === undefined || typeof entry[key] === 'string') &&
+    (entry.npcTask === undefined || (isRecord(entry.npcTask) && typeof entry.charId === 'string' &&
+      (entry.npcTask.kind === 'inquire' || entry.npcTask.kind === 'meet') && typeof entry.npcTask.subject === 'string'))));
 }
 
 function isJourney(value: unknown): value is JourneyState {
@@ -29,6 +31,18 @@ function isJourney(value: unknown): value is JourneyState {
     (value.retreatNotices === undefined || (Array.isArray(value.retreatNotices) &&
       value.retreatNotices.every((id) => typeof id === 'string'))) &&
     (value.openStory === undefined || isOpenStory(value.openStory)) &&
+    (value.npcChats === undefined || (isRecord(value.npcChats) && Object.values(value.npcChats).every((thread) =>
+      isRecord(thread) && Number.isSafeInteger(thread.day) && typeof thread.regionId === 'string' &&
+      (thread.greeting === undefined || typeof thread.greeting === 'string') &&
+      (thread.recollections === undefined || (Array.isArray(thread.recollections) &&
+        thread.recollections.every((entry) => isRecord(entry) && typeof entry.quote === 'string' &&
+          (entry.reply === undefined || typeof entry.reply === 'string') &&
+          (entry.day === undefined || Number.isSafeInteger(entry.day))))) &&
+      Array.isArray(thread.messages) && thread.messages.every((message) => isRecord(message) &&
+        (message.role === 'user' || message.role === 'assistant') && typeof message.content === 'string' &&
+        (message.note === undefined || typeof message.note === 'string') &&
+        (message.day === undefined || Number.isSafeInteger(message.day)) &&
+        (message.scripted === undefined || typeof message.scripted === 'boolean'))))) &&
     ['available', 'promised', 'declined', 'missed', 'fulfilled'].includes(String(value.herb.phase)) &&
     Object.values(value.memories).every((entries) => Array.isArray(entries) &&
       entries.every((entry) => isRecord(entry) && typeof entry.day === 'number' &&
@@ -55,6 +69,7 @@ export function parseLife(value: unknown): SaveSlotData | null {
         typeof player[field] === 'number' && Number.isFinite(player[field]))) return null;
   if (value.journey !== undefined && !isJourney(value.journey)) return null;
   if (value.version === SAVE_VERSION && !value.journey) return null;
+  if (value.pendingEventMinimized !== undefined && typeof value.pendingEventMinimized !== 'boolean') return null;
   if (value.pendingEvent !== undefined && (!isRecord(value.pendingEvent) ||
       typeof value.pendingEvent.id !== 'string' || typeof value.pendingEvent.title !== 'string' ||
       typeof value.pendingEvent.description !== 'string' || !Array.isArray(value.pendingEvent.choices) ||

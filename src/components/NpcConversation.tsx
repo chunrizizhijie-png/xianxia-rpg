@@ -1,45 +1,58 @@
-import { useEffect, useRef, useState } from 'react';
-import { X } from 'lucide-react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { ChevronDown, Send, X } from 'lucide-react';
 import { PORTRAITS } from '../data/portraits';
 import type { DialogueChoice, DialogueNode } from '../engine/npcDialogue';
 import type { CharacterData } from '../types/game';
-
-export interface ConversationTurn {
-  speaker: string;
-  line: string;
-}
+import type { NpcChatMessage } from '../types/journey';
 
 interface NpcConversationProps {
   character: CharacterData;
   location: string;
   remote: boolean;
   node: DialogueNode;
-  turns: ConversationTurn[];
+  turns: NpcChatMessage[];
   onChoose: (choice: DialogueChoice) => void;
-  onSpeak: (line: string) => boolean;
-  openStoryReady: boolean;
-  storyBusy: boolean;
-  storyError: string | null;
-  onEnableStory: () => void;
+  onSpeak: (line: string) => boolean | Promise<boolean>;
+  modelName: string | null;
+  loadingModel: boolean;
+  plan?: string;
+  pending: { input: string; reply: string } | null;
+  error: string | null;
+  onModel: (file: File) => void;
   onCancelStory: () => void;
   onClose: () => void;
 }
 
+function ChatBubble({ speaker, player, text }: { speaker: string; player?: boolean; text: string }) {
+  return (
+    <div className={`flex flex-col gap-1 ${player ? 'items-end' : 'items-start'}`}>
+      <span className="px-1 text-xs text-stone-400">{speaker}</span>
+      <p className={`max-w-[90%] whitespace-pre-wrap break-words rounded-xl border px-3.5 py-2.5 text-base leading-7 ${
+        player ? 'rounded-tr-sm border-[#c5a059]/30 bg-[#342a1d] text-[#f7e6c8]'
+          : 'rounded-tl-sm border-stone-700/75 bg-[#20242b] text-stone-100'
+      }`}>{text}</p>
+    </div>
+  );
+}
+
 export function NpcConversation({
   character, location, remote, node, turns, onChoose, onSpeak, onClose,
-  openStoryReady, storyBusy, storyError, onEnableStory, onCancelStory,
+  modelName, loadingModel, plan, pending, error, onModel, onCancelStory,
 }: NpcConversationProps) {
-  const threadEnd = useRef<HTMLDivElement>(null);
+  const thread = useRef<HTMLDivElement>(null);
   const closeButton = useRef<HTMLButtonElement>(null);
+  const atBottom = useRef(true);
   const [draft, setDraft] = useState('');
   const [unheard, setUnheard] = useState(false);
-  useEffect(() => {
-    threadEnd.current?.scrollIntoView({ block: 'nearest' });
-  }, [turns.length]);
-  useEffect(() => {
-    closeButton.current?.focus();
-  }, []);
   const portrait = PORTRAITS[character.id];
+  const fileMode = window.location.protocol === 'file:';
+  const busy = pending !== null;
+
+  useLayoutEffect(() => {
+    if (thread.current && atBottom.current) thread.current.scrollTop = thread.current.scrollHeight;
+  }, [turns, pending]);
+
+  useEffect(() => { closeButton.current?.focus({ preventScroll: true }); }, []);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-2 sm:p-6">
@@ -47,96 +60,128 @@ export function NpcConversation({
         role="dialog"
         aria-modal="true"
         aria-labelledby="npc-conversation-title"
-        onKeyDown={(event) => { if (event.key === 'Escape') onClose(); }}
-        className="xuan-card grid max-h-[94dvh] w-full max-w-4xl grid-cols-1 overflow-y-auto rounded-xl sm:grid-cols-[minmax(0,5fr)_minmax(0,8fr)]"
+        onKeyDown={(event) => { if (event.key === 'Escape' && !event.nativeEvent.isComposing) onClose(); }}
+        className={`xuan-card grid h-[min(720px,calc(100dvh-1rem))] w-full max-w-4xl overflow-hidden rounded-xl sm:h-[min(720px,calc(100dvh-3rem))] ${
+          portrait ? 'sm:grid-cols-[minmax(0,4fr)_minmax(0,9fr)]' : ''
+        }`}
       >
         {portrait && (
           <img
             src={portrait}
             alt={`${character.name}立绘`}
-            className="h-44 w-full object-cover object-[center_24%] sm:h-full sm:object-[center_25%]"
+            className="hidden h-full min-h-0 w-full object-cover object-[center_28%] sm:block"
           />
         )}
-        <div className="min-w-0 space-y-4 p-4 sm:p-6">
-          <header className="flex items-start justify-between gap-4 border-b border-[#c5a059]/30 pb-3">
-            <div>
-              <h2 id="npc-conversation-title" className="text-lg font-semibold text-[#e2c488]">{character.name}</h2>
-              <p className="mt-1 text-xs text-stone-400">{location} · {remote ? '玉简传音' : '当面交谈'}</p>
-              {openStoryReady
-                ? <p className="mt-1 text-xs text-[#e2c488]">本地自由叙事</p>
-                : <button type="button" onClick={onEnableStory} className="mt-1 text-xs text-[#e2c488]">载入本地模型</button>}
+        <div className="flex min-h-0 min-w-0 flex-col bg-[#15171c]">
+          <header className="flex shrink-0 items-start justify-between gap-2 border-b border-[#c5a059]/25 px-3 py-3 sm:px-5">
+            <div className="flex min-w-0 items-center gap-3">
+              {portrait && <img src={portrait} alt={`${character.name}立绘`} className="h-11 w-11 shrink-0 rounded-full border border-[#c5a059]/25 object-cover object-[center_24%] sm:hidden" />}
+              <div className="min-w-0">
+                <h2 id="npc-conversation-title" className="text-lg font-semibold text-[#e2c488]">{character.name}</h2>
+                <p className="text-xs leading-5 text-stone-400">{location} · {remote ? '玉简传音' : '当面交谈'}</p>
+              </div>
             </div>
             <button ref={closeButton} aria-label="结束交谈" onClick={onClose} type="button"
-              className="rounded p-2 text-stone-300 hover:bg-white/10">
-              <X className="h-4 w-4" />
+              className="grid h-11 w-11 shrink-0 place-items-center rounded-md text-stone-200 hover:bg-white/10">
+              <X aria-hidden="true" className="h-5 w-5" />
             </button>
           </header>
-          <div className="max-h-[28dvh] space-y-3 overflow-y-auto pr-2 sm:max-h-56" aria-live="polite">
-            {turns.map((turn, index) => (
-              <p key={index} className={`whitespace-pre-line break-words text-base leading-relaxed ${turn.speaker === '你' ? 'text-stone-400' : 'text-stone-100'}`}>
-                {turn.speaker === '你' && <span className="mr-2 text-xs text-[#e2c488]">你</span>}
-                {turn.line}
-              </p>
-            ))}
-            <div ref={threadEnd} />
+          <div className="flex shrink-0 flex-wrap items-center justify-between gap-x-2 border-b border-white/5 px-4 py-1 text-xs sm:px-5">
+            <span role="status" title={modelName ?? undefined} className="min-w-0 text-stone-300">
+              {loadingModel ? '正在读取本地模型…' : modelName ? '本地 AI 已连接' : '剧情对话'}
+            </span>
+            {fileMode ? <span className="py-2 text-[#e2c488]">请在本机网页载入 AI</span> : (
+              <label className="flex min-h-9 cursor-pointer items-center rounded px-2 text-[#e2c488] hover:bg-white/5 focus-within:ring-1">
+                {modelName ? '更换模型' : '载入本地模型'}
+                <input type="file" accept=".gguf" aria-label="本地 GGUF 模型" disabled={loadingModel || busy}
+                  className="sr-only" onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    if (file) {
+                      setUnheard(false);
+                      onModel(file);
+                    }
+                    event.currentTarget.value = '';
+                  }} />
+              </label>
+            )}
           </div>
-          {(node.choices.length > 0 || openStoryReady) && (
-            <form onSubmit={(event) => {
+          {plan && <p className="shrink-0 break-words border-b border-[#c5a059]/15 px-4 py-2 text-xs text-[#e2c488] sm:px-5">{plan}</p>}
+          <div ref={thread} role="log" aria-label="交谈记录" aria-relevant="additions"
+            onScroll={(event) => {
+              const element = event.currentTarget;
+              atBottom.current = element.scrollHeight - element.clientHeight - element.scrollTop < 48;
+            }}
+            className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-4 py-4 sm:px-5">
+            {turns.map((turn, index) => (
+              <div key={index} className="space-y-2">
+                <ChatBubble speaker={turn.role === 'user' ? '你' : character.name}
+                  text={turn.content} player={turn.role === 'user'} />
+                {turn.note && <p className="break-words text-center text-xs leading-5 text-[#e2c488]">{turn.note}</p>}
+              </div>
+            ))}
+            {pending && (
+              <>
+                <ChatBubble speaker="你" player text={pending.input} />
+                <div aria-live="off"><ChatBubble speaker={character.name} text={pending.reply || '…'} /></div>
+              </>
+            )}
+          </div>
+          <div className="shrink-0 border-t border-[#c5a059]/20 px-3 pb-3 pt-1 sm:px-5">
+            {node.choices.length > 0 && (
+              <details key={modelName ? 'ai' : 'story'} open={!modelName || undefined} className="group">
+                <summary className="flex min-h-9 cursor-pointer list-none items-center gap-1.5 text-sm text-[#e2c488]">
+                  <ChevronDown aria-hidden="true" className="h-4 w-4 -rotate-90 group-open:rotate-0" /> 剧情选项
+                </summary>
+                <div className="mb-2 max-h-[22dvh] space-y-1.5 overflow-y-auto overscroll-contain pr-1">
+                  {node.choices.map((choice) => (
+                    <button type="button" key={choice.topic?.id ?? choice.action}
+                      onClick={() => { atBottom.current = true; setUnheard(false); onChoose(choice); }}
+                      disabled={busy || Boolean(choice.lockReason)}
+                      className="block min-h-10 w-full rounded-md border border-[#c5a059]/25 bg-[#11141a] px-3 py-2 text-left text-sm text-stone-100 hover:border-[#e2c488] disabled:opacity-50">
+                      {choice.label}
+                      {choice.lockReason && <span className="ml-2 text-xs text-stone-400">{choice.lockReason}</span>}
+                    </button>
+                  ))}
+                </div>
+              </details>
+            )}
+            {error && <p role="alert" className="my-2 text-sm text-amber-200">{error}</p>}
+            {unheard && <p role="status" className="my-2 text-xs text-stone-300">可以问候、问行程，或从剧情选项里选一句。载入 AI 后就能直接聊。</p>}
+            {busy && (
+              <div className="flex items-center justify-between gap-2 text-xs text-stone-300">
+                <span role="status">{character.name}正在回复…</span>
+                <button type="button" onClick={onCancelStory} className="min-h-9 px-2 text-stone-200">停止回复</button>
+              </div>
+            )}
+            {node.choices.length > 0 && <form className="flex items-end gap-2" onSubmit={async (event) => {
               event.preventDefault();
               const line = draft.trim();
-              if (!line) return;
-              if (onSpeak(line)) {
-                setDraft('');
-                setUnheard(false);
-              } else {
-                setUnheard(true);
-              }
+              if (!line || busy || loadingModel) return;
+              atBottom.current = true;
+              setUnheard(false);
+              const result = onSpeak(line);
+              if (await result) setDraft('');
+              else if (result === false) setUnheard(true);
             }}>
-              <div className="flex gap-2">
-                <input
+                <textarea
                   aria-label="自己说一句"
                   value={draft}
-                  maxLength={openStoryReady ? 500 : 120}
-                  disabled={storyBusy}
+                  maxLength={modelName ? 500 : 120}
+                  readOnly={busy} disabled={loadingModel} rows={2}
                   onChange={(event) => { setDraft(event.target.value); setUnheard(false); }}
-                  placeholder={openStoryReady ? '说一句话，或描述此刻的行动' : '用自己的话问她，或回应下面的选项'}
-                  className="min-w-0 flex-1 rounded-md border border-stone-700 bg-[#11141a] px-3 py-2 text-sm text-stone-100"
+                  onKeyDown={(event) => {
+                    if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing || event.keyCode === 229) return;
+                    event.preventDefault();
+                    event.currentTarget.form?.requestSubmit();
+                  }}
+                  placeholder={modelName ? `跟${character.name}说点什么…` : '可以问候，也可以问她的行程…'}
+                  className="min-w-0 flex-1 resize-none rounded-lg border border-stone-600 bg-[#11141a] px-3 py-2 text-base text-stone-100 focus:border-[#e2c488] focus:outline-none"
                 />
-                <button type="submit" disabled={storyBusy || !draft.trim()}
-                  className="shrink-0 rounded-md border border-[#c5a059]/45 px-3 py-2 text-sm text-[#e2c488] disabled:opacity-40">
-                  开口
+                <button type="submit" disabled={busy || loadingModel || !draft.trim()}
+                  className="inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-lg bg-[#d7b471] px-3 text-sm font-semibold text-[#1b1610] hover:bg-[#e2c488] disabled:opacity-40">
+                  <Send aria-hidden="true" className="h-4 w-4" /> 发送
                 </button>
-              </div>
-              {storyBusy && (
-                <div className="mt-2 flex items-center justify-between gap-2 text-xs text-stone-400">
-                  <span role="status">正在推演这一幕…</span>
-                  <button type="button" onClick={onCancelStory} className="px-2 py-1 text-stone-200">取消这一回</button>
-                </div>
-              )}
-              {storyError && <p role="alert" className="mt-2 text-xs text-amber-200">{storyError}</p>}
-              {unheard && (
-                <p role="status" className="mt-2 text-xs text-stone-400">
-                  试试问行程、问候，或用自己的话回应下方的一个选项。
-                </p>
-              )}
-            </form>
-          )}
-          <div className="space-y-2">
-            {node.choices.map((choice) => (
-              <button
-                type="button"
-                key={choice.topic?.id ?? choice.action}
-                onClick={() => { setUnheard(false); onChoose(choice); }}
-                disabled={storyBusy || Boolean(choice.lockReason)}
-                className="block min-h-10 w-full rounded-md border border-[#c5a059]/30 bg-[#11141a] px-3 py-2 text-left text-sm text-stone-100 hover:border-[#e2c488] disabled:opacity-50"
-              >
-                {choice.label}
-                {choice.lockReason && <span className="ml-2 text-xs text-stone-400">{choice.lockReason}</span>}
-              </button>
-            ))}
-            <button type="button" onClick={onClose} className="min-h-10 px-2 text-sm text-stone-400 hover:text-stone-100">
-              告辞
-            </button>
+            </form>}
           </div>
         </div>
       </section>

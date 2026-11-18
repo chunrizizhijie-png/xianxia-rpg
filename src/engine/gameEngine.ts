@@ -1,4 +1,5 @@
-import { DESTINY_TRAITS, REALMS, SPIRIT_ROOTS } from '../data/realms';
+import { REALMS, SPIRIT_ROOTS } from '../data/realms';
+import { findDestinyTrait } from '../data/destinies';
 import { MAX_BIRTH_TRAITS } from './birth';
 import {
   AffectionStage,
@@ -48,8 +49,8 @@ export function createInitialPlayer(
 ): PlayerState {
   const root = SPIRIT_ROOTS.find((r) => r.id === spiritRoot) ?? SPIRIT_ROOTS[0];
   const realm = REALMS[0];
-  const chosen = new Set(traitIds.slice(0, MAX_BIRTH_TRAITS));
-  const traits = DESTINY_TRAITS.filter((t) => chosen.has(t.id));
+  const traits = [...new Set(traitIds)].map(findDestinyTrait)
+    .filter((trait) => trait !== undefined).slice(0, MAX_BIRTH_TRAITS);
 
   let atk = realm.baseAtk + root.atkBonus;
   let def = realm.baseDef;
@@ -84,12 +85,12 @@ export function createInitialPlayer(
     maxHp,
     mp: maxMp,
     maxMp,
-    atk,
-    def,
-    sense,
+    atk: Math.max(5, atk),
+    def: Math.max(1, def),
+    sense: Math.max(1, sense),
     luck: Math.max(1, luck),
     charm: Math.max(1, charm),
-    critRate: Math.min(0.75, critRate),
+    critRate: Math.max(0, Math.min(0.75, critRate)),
     spiritStones: 120,
     injury: 0,
     nextBreakthroughBonus: 0,
@@ -138,7 +139,7 @@ export function getEffectiveCultivationMult(
   let mult = root.cultivationMult;
 
   for (const tid of player.destinyTraits) {
-    const trait = DESTINY_TRAITS.find((t) => t.id === tid);
+    const trait = findDestinyTrait(tid);
     if (trait?.modifiers.cultivationSpeedMult) {
       mult += trait.modifiers.cultivationSpeedMult;
     }

@@ -5,6 +5,8 @@ import { REALMS } from '../data/realms';
 import { WORLD_REGIONS } from '../data/worldSandbox';
 import { herbJournalLine, rememberNpc } from './herbJourney';
 import { relationshipFor } from './relationships';
+import { deliverNpcLetter } from './npcChat';
+import { canKeepNpcMeeting } from './npcPlans';
 
 const EFFECTS = ['talk', 'time', 'effort', 'wound', 'trade', 'travel', 'rest', 'revise'] as const;
 type StoryEffect = typeof EFFECTS[number];
@@ -93,7 +95,7 @@ export function createStoryPrompt(
   const fortune = die + Math.min(20, player.luck) > 85 ? '稍顺' : die < 28 ? '稍有阻碍' : '平常';
   const history = sceneRecords(journey, scene.history, actor?.id).slice(-4)
     .map((entry) => `第${entry.day}日，${entry.fact || entry.text}`.slice(0, 170));
-  const pending = sceneRecords(journey, scene.pending, actor?.id).slice(0, 4)
+  const pending = sceneRecords(journey, scene.pending.filter((entry) => !entry.npcTask), actor?.id).slice(0, 4)
     .map((entry, index) => `编号${index + 1}，第${entry.day}日：${entry.text}`.slice(0, 145));
   const memory = actor ? (journey.memories[actor.id] ?? []).slice(-4).map((entry) =>
     `第${entry.day}日：${entry.detail}`.slice(0, 150)) : [];
@@ -201,7 +203,7 @@ export function applyStoryOutcome(
       break;
     }
     case 'revise': {
-      const related = sceneRecords(journey, scheduled, charId).slice(0, 4);
+      const related = sceneRecords(journey, scheduled.filter((entry) => !entry.npcTask), charId).slice(0, 4);
       const original = related[outcome.value - 1];
       if (original) {
         scheduled = scheduled.filter((entry) => entry.id !== original.id);
@@ -239,7 +241,11 @@ export function applyStoryOutcome(
 
 export function settleStoryFollowups(journey: JourneyState): { journey: JourneyState; due: StoryRecord[] } {
   const story = journey.openStory;
-  const due = story?.pending.filter((entry) => entry.day <= journey.day).sort((a, b) => a.day - b.day) ?? [];
+  const due = story?.pending.filter((entry) => entry.day <= journey.day).sort((a, b) => a.day - b.day)
+    .map((entry) => {
+      if (entry.npcTask?.kind !== 'meet' || !entry.charId || canKeepNpcMeeting(journey, entry.charId, entry.day)) return entry;
+      return { ...entry, npcTask: undefined, text: `你收到一封迟来的传音：原定在${regionName(entry.regionId)}谈「${entry.npcTask.subject}」的约见因对方临时有事搁下了。` };
+    }) ?? [];
   if (!story || due.length === 0) return { journey, due };
   let next: JourneyState = {
     ...journey,
@@ -252,6 +258,7 @@ export function settleStoryFollowups(journey: JourneyState): { journey: JourneyS
   for (const entry of due) {
     if (entry.charId) {
       next = rememberNpc(next, entry.charId, { id: entry.id, kind: 'story', detail: entry.text }, entry.day);
+      if (entry.npcTask) next = deliverNpcLetter(next, entry.charId, entry);
     }
   }
   return { journey: next, due };

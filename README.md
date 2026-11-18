@@ -16,8 +16,8 @@ npm run preview
 
 ## 自由行动与本地模型
 
-1. 点「踏入仙途」或「继续上次」进入游戏。主界面上方的行动区中，「自由行动」在「歇息一日」左侧。
-2. 点「自由行动 → 选择模型文件」，选中本机的 `qwen2.5-1.5b-instruct-q4_k_m.gguf`（约 1.12 GB）。模型可从 [Qwen 官方仓库](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/blob/main/qwen2.5-1.5b-instruct-q4_k_m.gguf)下载。
-3. 文件载入后，可以写想采取的行动，也可以在 NPC 对话框里输入自己的话。浏览器在本机生成回应。
+1. 新开人生先点「抽签」，从当轮五个命格里最多选三条，再点「踏入仙途」。每次启动共有三次抽签机会。已有进度可以点「继续上次」。
+2. 在任一 NPC 的聊天窗口点「载入本地模型」，或在主界面的「自由行动」中点「选择模型文件」，选中本机的 `qwen2.5-1.5b-instruct-q4_k_m.gguf`（约 1.12 GB）。模型可从 [Qwen 官方仓库](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/blob/main/qwen2.5-1.5b-instruct-q4_k_m.gguf)下载。
+3. 模型载入后，六位 NPC 都可以自由交谈，人物各自的记忆、查访和约见随存档保留。也可以在「自由行动」写下想做的事。浏览器在本机生成回应。
 
 构建后也可直接打开 `dist/玄霄问道录.html` 游玩基础版本。Android WebView 工程位于 `android/`，`npm run build` 会同步其中的离线网页资源。

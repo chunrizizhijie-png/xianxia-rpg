@@ -1,8 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { Dices, Sparkles, ArrowRight } from 'lucide-react';
-import { DESTINY_TRAITS, SPIRIT_ROOTS } from '../data/realms';
+import { SPIRIT_ROOTS } from '../data/realms';
+import { findDestinyTrait } from '../data/destinies';
 import { SpiritRootType } from '../types/game';
-import { BIRTH_DRAFT_KEY, loadBirthDraft, MAX_BIRTH_TRAITS } from '../engine/birth';
+import { drawBirth, loadBirthSession, MAX_BIRTH_DRAWS, MAX_BIRTH_TRAITS, saveBirthSession } from '../engine/birth';
 
 interface CharacterCreationModalProps {
   onStart: (daoName: string, root: SpiritRootType, traits: string[]) => void;
@@ -16,18 +17,19 @@ export const CharacterCreationModal: React.FC<CharacterCreationModalProps> = ({
   children,
 }) => {
   const [daoName, setDaoName] = useState('林玄');
-  const [birth] = useState(loadBirthDraft);
+  const [session, setSession] = useState(loadBirthSession);
   const [selectedTraits, setSelectedTraits] = useState<string[]>([]);
-  const root = SPIRIT_ROOTS.find((entry) => entry.id === birth.root) ?? SPIRIT_ROOTS[2];
-  const choices = birth.candidates.flatMap((id) => DESTINY_TRAITS.filter((entry) => entry.id === id));
+  const root = SPIRIT_ROOTS.find((entry) => entry.id === session.draft?.root);
+  const choices = (session.draft?.candidates ?? []).map(findDestinyTrait).filter((trait) => trait !== undefined);
+  const remaining = MAX_BIRTH_DRAWS - session.used;
 
-  useEffect(() => {
-    try {
-      localStorage.setItem(BIRTH_DRAFT_KEY, JSON.stringify(birth));
-    } catch {
-      // The draw still applies to this draft in memory.
-    }
-  }, [birth]);
+  const handleDraw = () => {
+    if (!remaining) return;
+    const next = drawBirth(session);
+    saveBirthSession(next);
+    setSession(next);
+    setSelectedTraits([]);
+  };
 
   const toggleTrait = (id: string) => {
     if (selectedTraits.includes(id)) {
@@ -38,12 +40,7 @@ export const CharacterCreationModal: React.FC<CharacterCreationModalProps> = ({
   };
 
   const handleBegin = () => {
-    try {
-      localStorage.removeItem(BIRTH_DRAFT_KEY);
-    } catch {
-      // Starting the life is independent of whether the draft was stored.
-    }
-    onStart(daoName, root.id, selectedTraits);
+    if (root) onStart(daoName, root.id, selectedTraits);
   };
 
   return (
@@ -86,18 +83,30 @@ export const CharacterCreationModal: React.FC<CharacterCreationModalProps> = ({
 
         {/* Spirit Root */}
         <div>
-          <p className="block text-sm text-[#e2c488] mb-2">二、此世灵根</p>
-          <div className="xuan-panel rounded-xl p-3.5">
-            <div className="flex items-center justify-between">
-              <span className="font-bold text-sm" style={{ color: root.color }}>{root.name}</span>
-              <span className="text-xs text-stone-400">吐纳倍率 ×{root.cultivationMult}</span>
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <p className="text-sm text-[#e2c488]">二、抽取灵根与命格</p>
+            <div className="flex items-center gap-2">
+              <span role="status" className="text-xs text-stone-300">剩余 {remaining} / {MAX_BIRTH_DRAWS} 抽</span>
+              <button type="button" onClick={handleDraw} disabled={remaining === 0}
+                className="inline-flex min-h-10 items-center gap-1.5 rounded-lg border border-[#c5a059]/50 px-3 text-sm text-[#e2c488] hover:bg-[#c5a059]/15 disabled:opacity-40">
+                <Dices aria-hidden="true" className="h-4 w-4" /> {root ? '重新抽签' : '抽签'}
+              </button>
             </div>
-            <p className="text-xs text-stone-300 mt-2 leading-relaxed">{root.description}</p>
           </div>
+          <p className="mb-2 text-xs text-stone-400">每次启动有三抽。重抽会替换灵根和整组命格。</p>
+          {root && (
+            <div className="xuan-panel rounded-xl p-3.5">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-bold" style={{ color: root.color }}>{root.name}</span>
+                <span className="text-xs text-stone-400">吐纳倍率 ×{root.cultivationMult}</span>
+              </div>
+              <p className="mt-2 text-xs leading-relaxed text-stone-300">{root.description}</p>
+            </div>
+          )}
         </div>
 
         {/* Destiny Traits */}
-        <div>
+        {root && <div>
           <div className="flex items-center justify-between mb-2">
             <label className="text-sm text-[#e2c488]">
               三、筛选命格 · 已选 {selectedTraits.length}/{MAX_BIRTH_TRAITS}
@@ -133,12 +142,13 @@ export const CharacterCreationModal: React.FC<CharacterCreationModalProps> = ({
               );
             })}
           </div>
-        </div>
+        </div>}
 
         <div className="pt-2 flex justify-end">
           <button
             type="button"
             onClick={handleBegin}
+            disabled={!root}
             className="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-gradient-to-r from-[#b8893a] to-[#d6b26b] text-[#0f1115] font-bold text-sm hover:brightness-110 disabled:opacity-40 transition shadow-lg"
           >
             <span>踏入仙途</span>

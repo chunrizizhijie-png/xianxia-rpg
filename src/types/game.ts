@@ -251,6 +251,7 @@ export interface EnemyConfig {
   id: string;
   name: string;
   realmName: string;
+  realmIndex: number;
   hp: number;
   atk: number;
   def: number;
@@ -352,6 +353,7 @@ export interface SaveSlotData {
   activeCharacterId: string;
   journey?: JourneyState;
   pendingEvent?: GameEvent;
+  pendingEventMinimized?: boolean;
   materials?: Record<string, number>;
   customSkills?: SkillTag[];
   customItems?: ItemConfig[];

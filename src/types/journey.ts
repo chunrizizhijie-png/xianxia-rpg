@@ -27,12 +27,35 @@ export interface StoryRecord {
   action?: string;
   text: string;
   fact?: string;
+  npcTask?: { kind: 'inquire' | 'meet'; subject: string };
 }
 
 export interface OpenStoryState {
   turns: number;
   history: StoryRecord[];
   pending: StoryRecord[];
+}
+
+export interface NpcChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+  scripted?: boolean;
+  day?: number;
+  note?: string;
+}
+
+export interface NpcChatRecollection {
+  quote: string;
+  reply?: string;
+  day?: number;
+}
+
+export interface NpcChatThread {
+  day: number;
+  regionId: string;
+  greeting?: string;
+  messages: NpcChatMessage[];
+  recollections?: NpcChatRecollection[];
 }
 
 export interface JourneyState {
@@ -44,5 +67,6 @@ export interface JourneyState {
   lastNoticeDay: number;
   retreatNotices?: string[];
   openStory?: OpenStoryState;
+  npcChats?: Record<string, NpcChatThread>;
   herb: HerbJourney;
 }

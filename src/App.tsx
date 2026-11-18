@@ -26,7 +26,9 @@ import {
   findRetreatInterruption,
   initializeJourney,
   initNpcWorldStatuses,
+  markRescueSent,
   refreshNpcAgendas,
+  rescueEventId,
   simulateWorldTick,
 } from './engine/livingWorldEngine';
 import {
@@ -43,7 +45,7 @@ import {
   SkillTag,
   SpiritRootType,
 } from './types/game';
-import type { JourneyState } from './types/journey';
+import type { JourneyState, NpcChatMessage } from './types/journey';
 import {
   advanceTime,
   attemptBreakthrough,
@@ -79,6 +81,8 @@ import {
   answerSmallTalk, chooseDialogue, matchDialogueInput, openConversation,
   type DialogueChoice, type DialogueNode,
 } from './engine/npcDialogue';
+import { isMemoryTurn, npcChatMessages, npcDecisionMessages, npcPlanLabel, saveNpcChat } from './engine/npcChat';
+import { applyNpcDecision, type NpcDecision, npcDecisionOptions, pendingNpcTask } from './engine/npcPlans';
 import { giftRefusal, relationshipFor, storyEventId } from './engine/relationships';
 import { applyStoryOutcome, createStoryPrompt, settleStoryFollowups } from './engine/openStory';
 import { LocalStoryModel } from './engine/localStoryModel';
@@ -93,7 +97,7 @@ import { InventoryAndSkillsPanel } from './components/InventoryAndSkillsPanel';
 import { SandboxHubPanel } from './components/SandboxHubPanel';
 import { SettingsAndHotReloadModal } from './components/SettingsAndHotReloadModal';
 import { EpitaphModal } from './components/EpitaphModal';
-import { NpcConversation, type ConversationTurn } from './components/NpcConversation';
+import { NpcConversation } from './components/NpcConversation';
 import { LifeFileInput } from './components/LifeFileInput';
 import { OpenStoryPanel } from './components/OpenStoryPanel';
 
@@ -116,6 +120,8 @@ export default function App() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [activeEvent, setActiveEvent] = useState<GameEvent | null>(null);
   const [eventResultText, setEventResultText] = useState<string | null>(null);
+  const [eventMinimized, setEventMinimized] = useState(false);
+  const eventVisible = Boolean(activeEvent && !eventMinimized);
   const [dualSceneModal, setDualSceneModal] = useState<{
     charName: string;
     sceneText: string;
@@ -130,7 +136,8 @@ export default function App() {
   const [conversation, setConversation] = useState<{
     charId: string;
     node: DialogueNode;
-    turns: ConversationTurn[];
+    greeting: string;
+    turns: NpcChatMessage[];
   } | null>(null);
   const [storyModel] = useState(() => new LocalStoryModel());
   const [modelName, setModelName] = useState<string | null>(null);
@@ -139,6 +146,7 @@ export default function App() {
   const [storyBusy, setStoryBusy] = useState(false);
   const [storyError, setStoryError] = useState<string | null>(null);
   const [storyResult, setStoryResult] = useState<{ text: string; effects: string[] } | null>(null);
+  const [pendingNpcReply, setPendingNpcReply] = useState<{ input: string; reply: string } | null>(null);
   const storyJob = useRef<AbortController | null>(null);
   const sceneVersion = useRef({ player, journey });
   useEffect(() => {
@@ -166,6 +174,12 @@ export default function App() {
     cancelStory();
     setStoryPanel(false);
     setStoryError(null);
+  };
+
+  const showEvent = (event: GameEvent | null, minimized = false) => {
+    setActiveEvent(event);
+    setEventResultText(null);
+    setEventMinimized(minimized);
   };
 
   const appendLog = (
@@ -202,13 +216,14 @@ export default function App() {
       activeCharacterId: activeCharId,
       journey,
       pendingEvent: activeEvent && eventResultText === null ? activeEvent : undefined,
+      pendingEventMinimized: activeEvent && eventResultText === null && eventMinimized ? true : undefined,
       materials,
       customSkills: skillDefs.filter((skill) => !SKILLS.includes(skill)),
       customItems: itemDefs.filter((item) => !ITEMS.includes(item)),
       customCharacters: characterDefs.filter((character) => !ALL_CHARACTERS.includes(character)),
       customEvents: eventDefs.filter((event) => !EVENTS.includes(event)),
     };
-  }, [player, charStates, logs, activeCharId, journey, materials, skillDefs, itemDefs, characterDefs, eventDefs, activeEvent, eventResultText]);
+  }, [player, charStates, logs, activeCharId, journey, materials, skillDefs, itemDefs, characterDefs, eventDefs, activeEvent, eventResultText, eventMinimized]);
 
   useEffect(() => {
     if (!player || (battle && !player.isDead)) return;
@@ -220,7 +235,19 @@ export default function App() {
     setStoryResult(null);
     const defs = [...ALL_CHARACTERS, ...(save.customCharacters ?? [])];
     const characters = { ...createInitialCharacters(defs), ...save.characters };
-    const restoredJourney = restoreJourney(save, defs);
+    let restoredJourney = restoreJourney(save, defs);
+    let pendingEvent = save.pendingEvent;
+    if (pendingEvent) {
+      const rescueKey = storyEventId(pendingEvent.id);
+      const rescuer = defs.find((character) => rescueEventId(character.id) === rescueKey);
+      const status = rescuer && restoredJourney.npcStatuses[rescuer.id];
+      if (rescuer && status) {
+        if (!pendingEvent.choices.some((choice) => choice.id === 'rescue_call_backup')) {
+          pendingEvent = buildInterveneEvent(rescuer, { ...status, interveneType: 'rescue' }, save.player);
+        }
+        restoredJourney = markRescueSent(restoredJourney, rescuer.id);
+      }
+    }
     setCharacterDefs(defs);
     setSkillDefs([...(save.customSkills ?? []), ...SKILLS]);
     setItemDefs([...(save.customItems ?? []), ...ITEMS]);
@@ -233,8 +260,7 @@ export default function App() {
     setActiveCharId(defs.some((character) => character.id === save.activeCharacterId)
       ? save.activeCharacterId : defs[0].id);
     setBattle(null);
-    setActiveEvent(save.pendingEvent ?? null);
-    setEventResultText(null);
+    showEvent(pendingEvent ?? null, Boolean(pendingEvent && save.pendingEventMinimized));
     setConversation(null);
     setDualSceneModal(null);
     setShowBreakthrough(false);
@@ -270,8 +296,7 @@ export default function App() {
     setItemDefs(ITEMS);
     setActiveCharId(characterDefs[0].id);
     setBattle(null);
-    setActiveEvent(null);
-    setEventResultText(null);
+    showEvent(null);
     setConversation(null);
     setLogs([
       {
@@ -307,6 +332,13 @@ export default function App() {
     );
   }
 
+  const releaseDeferredEncounter = () => {
+    if (!activeEvent || !eventMinimized) return false;
+    appendLog(player, 'event', `你放下了「${activeEvent.title}」。`);
+    showEvent(null);
+    return true;
+  };
+
   const advanceJourney = (
     nextPlayer: PlayerState,
     { days = 0, from = journey, allowUrgent = false }: {
@@ -325,18 +357,16 @@ export default function App() {
       if (from !== journey) setJourney(from);
       return { player: aged, journey: from };
     }
+    const encounterRemains = !releaseDeferredEncounter() && Boolean(activeEvent);
     const tick = simulateWorldTick(from, characterDefs, aged, elapsedDays,
-      allowUrgent && !aged.isDead && !activeEvent && !battle);
+      allowUrgent && !aged.isDead && !encounterRemains && !battle);
     const continued = settleStoryFollowups(tick.nextJourney);
     setJourney(continued.journey);
     for (const entry of continued.due) {
       appendLog(aged, 'event', entry.text, { ...continued.journey, day: entry.day, regionId: entry.regionId });
     }
     for (const rumor of tick.worldRumors) appendLog(aged, 'system', rumor, continued.journey);
-    if (tick.proactiveEvent) {
-      setActiveEvent(tick.proactiveEvent);
-      setEventResultText(null);
-    }
+    if (tick.proactiveEvent) showEvent(tick.proactiveEvent);
     return { player: aged, journey: continued.journey };
   };
 
@@ -356,7 +386,7 @@ export default function App() {
   ]));
 
   const handleCultivate = (months: number) => {
-    if (battle || player.isDead || activeEvent) return;
+    if (battle || player.isDead || eventVisible) return;
     const lifeDays = (player.lifespanCapYears * 12 - player.ageMonths) * DAYS_PER_MONTH -
       ((journey.day - 1) % DAYS_PER_MONTH);
     const plannedDays = Math.max(0, Math.min(months * DAYS_PER_MONTH, lifeDays));
@@ -377,16 +407,15 @@ export default function App() {
       advanced.journey,
     );
     if (interruption && !advanced.player.isDead) {
-      setActiveEvent({
+      showEvent({
         ...interruption.event,
         description: `${progress}\n\n${interruption.event.description}`,
       });
-      setEventResultText(null);
     }
   };
 
   const handleRest = () => {
-    if (battle || player.isDead) return;
+    if (battle || player.isDead || eventVisible) return;
     const rested = {
       ...player,
       hp: Math.min(player.maxHp, player.hp + Math.ceil(player.maxHp * 0.08)),
@@ -398,7 +427,7 @@ export default function App() {
   };
 
   const handleExplore = (isSecretRealm = false) => {
-    if (battle || player.isDead) return;
+    if (battle || player.isDead || eventVisible) return;
     const pool = filterAvailableEvents(eventDefs, player, charStates);
     const filtered = isSecretRealm
       ? pool.filter((e) => e.category === 'secret_realm' || e.category === 'encounter')
@@ -406,8 +435,8 @@ export default function App() {
     const source = filtered.length > 0 ? filtered : pool;
     const picked = source[Math.floor(Math.random() * source.length)];
     if (picked) {
-      setActiveEvent(picked);
-      setEventResultText(null);
+      releaseDeferredEncounter();
+      showEvent(picked);
     }
   };
 
@@ -416,8 +445,8 @@ export default function App() {
     const st = npcStatuses[charId];
     if (!cDef || player.isDead || battle || st?.regionId !== currentRegionId) return;
     const sparEnemy = createSparEnemyFromCharacter(cDef, st?.realmIndex ?? 3);
-    setActiveEvent(null);
-    setEventResultText(null);
+    releaseDeferredEncounter();
+    showEvent(null);
     setBattle(initBattle(sparEnemy, { type: 'spar', charId, eventId }));
   };
 
@@ -481,8 +510,7 @@ export default function App() {
       }
       const enemy =
         ENEMIES.find((e) => e.id === outcome.triggerBattleEnemyId) ?? ENEMIES[0];
-      setActiveEvent(null);
-      setEventResultText(null);
+      showEvent(null);
       setBattle(
         initBattle(enemy, {
           type: 'rescue',
@@ -648,15 +676,23 @@ export default function App() {
   const handleTalk = (charId: string, opening?: string) => {
     const character = characterDefs.find((entry) => entry.id === charId);
     const runtime = charStates[charId];
-    if (!character || !runtime || battle || player.isDead || activeEvent) return;
+    if (!character || !runtime || battle || player.isDead || eventVisible || storyJob.current) return;
     const entry = openConversation({ character, runtime, player, journey });
     const node = opening ? { ...entry, line: opening } : entry;
+    const history = journey.npcChats?.[charId];
+    const turns = history?.messages ?? [];
+    const resume = !opening && node.choices.length > 0 && turns.length > 0 &&
+      history?.regionId === currentRegionId && history.greeting === entry.line;
     setActiveCharId(charId);
-    setConversation({ charId, node, turns: [{ speaker: character.name, line: node.line }] });
+    setStoryError(null);
+    setConversation({
+      charId, node, greeting: entry.line,
+      turns: resume ? turns : [...turns, { role: 'assistant', content: node.line, scripted: true }],
+    });
   };
 
   const handleDialogueChoice = (choice: DialogueChoice, spoken = choice.label) => {
-    if (!conversation || choice.lockReason || !conversation.node.choices.includes(choice)) return;
+    if (!conversation || storyJob.current || choice.lockReason || !conversation.node.choices.includes(choice)) return;
     const character = characterDefs.find((entry) => entry.id === conversation.charId);
     const runtime = charStates[conversation.charId];
     if (!character || !runtime) return;
@@ -666,37 +702,37 @@ export default function App() {
       if (!status?.canIntervene || status.regionId !== currentRegionId) return;
       const visit = buildProactiveVisitEvent(character, player);
       if (!visit) return;
+      releaseDeferredEncounter();
       setJourney({
         ...journey,
         npcStatuses: { ...npcStatuses, [character.id]: { ...status, canIntervene: false } },
       });
       setConversation(null);
-      setActiveEvent(visit);
-      setEventResultText(null);
+      showEvent(visit);
       return;
     }
+    setStoryError(null);
     const tookTrip = next.journey.herb.phase === 'fulfilled' && journey.herb.phase !== 'fulfilled';
     const advanced = advanceJourney(next.player, { from: next.journey, days: tookTrip ? 1 : 0 });
+    const fromChat = journey.npcChats?.[character.id]?.messages ?? [];
+    const followups = advanced.journey.npcChats?.[character.id]?.messages.filter((turn) => !fromChat.includes(turn)) ?? [];
+    const turns: NpcChatMessage[] = [...conversation.turns,
+      { role: 'user', content: spoken, scripted: spoken === choice.label, day: journey.day },
+      { role: 'assistant', content: next.node.line, scripted: true, day: advanced.journey.day }, ...followups];
+    const greeting = choice.action === 'greet' ? next.node.line : conversation.greeting;
+    setJourney(saveNpcChat(advanced.journey, character.id, turns, greeting));
     setCharStates({ ...charStates, [character.id]: next.runtime });
-    setConversation({
-      charId: character.id,
-      node: next.node,
-      turns: [...conversation.turns,
-        { speaker: '你', line: spoken },
-        { speaker: character.name, line: next.node.line }],
-    });
+    setConversation({ charId: character.id, node: next.node, greeting, turns });
     if (choice.action !== 'greet') {
       const opening = conversation.turns.length === 1 ? `${conversation.node.line}\n\n` : '';
       appendLog(advanced.player, 'bond', `与${character.name}交谈\n${opening}你：${spoken}\n${next.node.line}`, advanced.journey);
     }
   };
 
-  const handleOpenAction = (input: string, dialogActorId?: string): boolean => {
+  const handleOpenAction = (input: string): boolean => {
     const action = input.trim();
-    if (!action || !modelName || modelLoading || storyJob.current || activeEvent || battle || player.isDead) return false;
-    const actor = dialogActorId
-      ? characterDefs.find((character) => character.id === dialogActorId)
-      : characterDefs.find((character) => action.includes(character.name));
+    if (!action || !modelName || modelLoading || storyJob.current || eventVisible || battle || player.isDead) return false;
+    const actor = characterDefs.find((character) => action.includes(character.name));
     const runtime = actor ? charStates[actor.id] : undefined;
     const request = new AbortController();
     storyJob.current = request;
@@ -723,17 +759,6 @@ export default function App() {
           const nextRuntime = { ...runtime, lastSpokenLine: turn.record.text,
             interactionCount: runtime.interactionCount + 1 };
           setCharStates((previous) => ({ ...previous, [actor.id]: nextRuntime }));
-          if (dialogActorId) {
-            const node = openConversation({
-              character: actor, runtime: nextRuntime, player: advanced.player, journey: advanced.journey,
-            });
-            setConversation((current) => current?.charId === actor.id ? {
-              ...current,
-              node,
-              turns: [...current.turns, { speaker: '你', line: action },
-                { speaker: actor.name, line: turn.record.text + suffix }],
-            } : current);
-          }
         }
         if (advanced.player.isDead) {
           setConversation(null);
@@ -751,27 +776,75 @@ export default function App() {
     return true;
   };
 
+  const handleNpcReply = async (line: string, character: CharacterData, chat: NonNullable<typeof conversation>) => {
+    const runtime = charStates[character.id];
+    const request = new AbortController();
+    storyJob.current = request;
+    setStoryBusy(true);
+    setStoryError(null);
+    setPendingNpcReply({ input: line, reply: '' });
+    try {
+      const options = npcDecisionOptions(character, runtime, player, journey, line);
+      const decision = isMemoryTurn(line) ? undefined : await storyModel.decideNpcAction(
+        npcDecisionMessages(character, runtime, journey, chat.turns, line, options),
+        Object.keys(options) as NpcDecision['action'][], request.signal);
+      if (request.signal.aborted) return false;
+      const action = decision ? applyNpcDecision(decision, character, runtime, player, journey, line)
+        : { journey, note: undefined, spoken: undefined, direction: '能从旧话找到答案，就回应对方问的具体细节。对方嘱你记下的事只留在这里。' };
+      const messages = npcChatMessages(character, runtime, player, journey, chat.turns, line, action.direction);
+      const generated = await storyModel.replyAsNpc(character.name, messages, request.signal, (partial) => {
+        if (!action.spoken && storyJob.current === request && !request.signal.aborted) {
+          setPendingNpcReply({ input: line, reply: partial });
+        }
+      }).catch((error) => {
+        if (request.signal.aborted || !action.spoken) throw error;
+        return action.spoken.fallback;
+      });
+      if (request.signal.aborted) return false;
+      if (sceneVersion.current.player !== player || sceneVersion.current.journey !== journey) {
+        setStoryError('等候时场面已经变了，可以重新发送。');
+        return false;
+      }
+      const reply = action.spoken && !action.spoken.cue.test(generated) ? action.spoken.fallback : generated;
+      const turns: NpcChatMessage[] = [...chat.turns, { role: 'user', content: line, day: journey.day },
+        { role: 'assistant', content: reply, note: action.note, day: journey.day }];
+      setConversation({ ...chat, turns });
+      setJourney(saveNpcChat(action.journey, character.id, turns, chat.greeting));
+      appendLog(player, 'bond', `与${character.name}交谈\n你：${line}\n${reply}${action.note ? `\n${action.note}` : ''}`);
+      return true;
+    } catch {
+      if (!request.signal.aborted) setStoryError('这句话没接上。原话还在输入框里，可以重试。');
+      return false;
+    } finally {
+      if (storyJob.current === request) {
+        storyJob.current = null;
+        setStoryBusy(false);
+        setPendingNpcReply(null);
+      }
+    }
+  };
+
   const handlePlayerLine = (line: string) => {
     if (!conversation || storyJob.current) return false;
     if (/^(告辞|我先走了|改日再聊)[。！]?$/.test(line)) {
       setConversation(null);
       return true;
     }
-    if (modelName) return handleOpenAction(line, conversation.charId);
     if (!conversation.node.choices.length) return false;
-    const matchingChoice = matchDialogueInput(line, conversation.node);
+    const matchingChoice = matchDialogueInput(line, conversation.node, Boolean(modelName));
     if (matchingChoice) {
       handleDialogueChoice(matchingChoice, line);
       return true;
     }
     const character = characterDefs.find((entry) => entry.id === conversation.charId);
     if (!character) return false;
+    if (modelName) return handleNpcReply(line, character, conversation);
     const reply = answerSmallTalk(line, character, journey);
     if (!reply) return false;
-    setConversation({
-      ...conversation,
-      turns: [...conversation.turns, { speaker: '你', line }, { speaker: character.name, line: reply }],
-    });
+    const turns: NpcChatMessage[] = [...conversation.turns, { role: 'user', content: line, day: journey.day },
+      { role: 'assistant', content: reply, scripted: true, day: journey.day }];
+    setConversation({ ...conversation, turns });
+    setJourney(saveNpcChat(journey, character.id, turns, conversation.greeting));
     appendLog(player, 'bond', `与${character.name}交谈\n你：${line}\n${reply}`);
     return true;
   };
@@ -784,7 +857,7 @@ export default function App() {
     const cDef = characterDefs.find((c) => c.id === charId);
     const cState = charStates[charId];
     const npcSt = npcStatuses[charId];
-    if (!cDef || !cState || battle || activeEvent || player.isDead || npcSt?.regionId !== currentRegionId) return;
+    if (!cDef || !cState || battle || eventVisible || player.isDead || npcSt?.regionId !== currentRegionId) return;
     if (action === 'gift') {
       if (!giftItem || (player.inventory[giftItem.id] ?? 0) <= 0) return;
       const refusal = giftRefusal(journey, cDef, cState, giftItem);
@@ -829,8 +902,8 @@ export default function App() {
     if (shuraTriggered) {
       const shuraEvt = eventDefs.find((e) => e.category === 'shura_field');
       if (shuraEvt) {
-        setActiveEvent(shuraEvt);
-        setEventResultText(null);
+        releaseDeferredEncounter();
+        showEvent(shuraEvt);
         return;
       }
     }
@@ -838,7 +911,7 @@ export default function App() {
   };
 
   const handleTravelRegion = (region: WorldRegion) => {
-    if (battle || player.isDead || region.id === currentRegionId || player.realmIndex < region.minRealmIndex) return;
+    if (battle || player.isDead || eventVisible || region.id === currentRegionId || player.realmIndex < region.minRealmIndex) return;
     const advanced = advanceJourney(player, {
       days: 1, from: { ...journey, regionId: region.id }, allowUrgent: true,
     });
@@ -1032,18 +1105,23 @@ export default function App() {
   const handleInterveneNpc = (charId: string) => {
     const cDef = characterDefs.find((c) => c.id === charId);
     const st = npcStatuses[charId];
-    if (!cDef || !st?.canIntervene || st.regionId !== currentRegionId || battle || player.isDead || activeEvent) return;
+    if (!cDef || !st?.canIntervene || st.regionId !== currentRegionId || battle || player.isDead || eventVisible) return;
+    const afterNotice = st.interveneType === 'rescue' ? markRescueSent(journey, charId) : journey;
+    if (st.interveneType === 'rescue' && afterNotice === journey) {
+      setJourney(refreshNpcAgendas(journey));
+      return;
+    }
 
     setActiveCharId(charId);
     if (st.interveneType === 'spar') {
       handleStartSparWithChar(charId);
     } else {
-      setActiveEvent(buildInterveneEvent(cDef, st, player));
-      setEventResultText(null);
+      releaseDeferredEncounter();
+      showEvent(buildInterveneEvent(cDef, st, player));
     }
 
     setJourney({
-      ...journey,
+      ...afterNotice,
       npcStatuses: { ...npcStatuses, [charId]: { ...st, canIntervene: false } },
     });
   };
@@ -1129,8 +1207,8 @@ export default function App() {
         setEventDefs((prev) => [...parsed, ...prev]);
         appendLog(player, 'system', `热注入了 ${parsed.length} 条自定义奇遇事件。`);
         if (triggerImmediately) {
-          setActiveEvent(parsed[0]);
-          setEventResultText(null);
+          releaseDeferredEncounter();
+          showEvent(parsed[0]);
         }
         return { ok: true, message: `成功注入 ${parsed.length} 条事件！` };
       } else {
@@ -1205,10 +1283,25 @@ export default function App() {
               />
             </div>
 
+            {activeEvent && eventMinimized && (
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[#c5a059]/35 px-3 py-2">
+                <div>
+                  <p className="text-sm text-[#e2c488]">暂收 · {activeEvent.title}</p>
+                  <p className="mt-1 text-xs text-stone-400">时间推进或遇到新奇遇后，这件事就会错过。</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button type="button" onClick={() => setEventMinimized(false)}
+                    className="min-h-11 rounded-md border border-[#c5a059]/45 px-3 text-sm text-[#e2c488] hover:bg-[#c5a059]/15">继续奇遇</button>
+                  <button type="button" onClick={releaseDeferredEncounter}
+                    className="min-h-11 rounded-md px-3 text-sm text-stone-300 hover:bg-white/10">放下此事</button>
+                </div>
+              </div>
+            )}
+
             <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-2.5">
               <button
                 type="button"
-                disabled={Boolean(battle) || Boolean(activeEvent)}
+                disabled={Boolean(battle) || eventVisible}
                 onClick={() => { setStoryError(null); setStoryPanel(true); }}
                 className="rounded-xl border border-[#c5a059]/50 bg-[#c5a059]/10 px-3 py-2.5 text-xs font-semibold text-[#e2c488] hover:bg-[#c5a059]/20 disabled:opacity-40"
               >
@@ -1396,10 +1489,12 @@ export default function App() {
           turns={conversation.turns}
           onChoose={handleDialogueChoice}
           onSpeak={handlePlayerLine}
-          openStoryReady={Boolean(modelName)}
-          storyBusy={storyBusy}
-          storyError={storyError}
-          onEnableStory={() => { setStoryError(null); setStoryPanel(true); }}
+          modelName={modelName}
+          loadingModel={modelLoading}
+          plan={npcPlanLabel(pendingNpcTask(journey, conversation.charId))}
+          pending={pendingNpcReply}
+          error={storyError}
+          onModel={loadStoryModel}
           onCancelStory={cancelStory}
           onClose={() => { cancelStory(); setStoryError(null); setConversation(null); }}
         />
@@ -1463,15 +1558,15 @@ export default function App() {
         />
       )}
 
-      {activeEvent && (
+      {activeEvent && eventVisible && (
         <EventModal
           event={activeEvent}
           player={player}
           resultText={eventResultText}
           onSelectChoice={handleEventChoice}
           onClose={() => {
-            setActiveEvent(null);
-            setEventResultText(null);
+            if (eventResultText === null) setEventMinimized(true);
+            else showEvent(null);
           }}
         />
       )}

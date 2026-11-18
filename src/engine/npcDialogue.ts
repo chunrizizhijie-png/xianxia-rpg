@@ -99,6 +99,7 @@ export function openConversation({ character, runtime, player, journey }: Dialog
     character.dialogues[getAffectionStage(runtime.affection).stage]?.[0] ??
     runtime.lastSpokenLine;
   line = rememberedReply(character, personalHistory) ?? line;
+  if (status?.activityKey?.startsWith('npc-meeting:')) line = getNpcAgendaReply(journey, character.id);
   if (character.id === HERBALIST) {
     line = herbGreeting(journey, nearby) ?? (player.injury >= 15 && nearby
       ? '林婉儿看见你搭在膝上的手一直没松开。「先别说话。哪里疼，你指给我看。」'
@@ -317,11 +318,24 @@ const spokenIntents: [DialogueChoice['action'], RegExp][] = [
   ['greet', /换.{0,3}(话题|个事)|聊点别的/],
 ];
 
-export function matchDialogueInput(text: string, node: DialogueNode): DialogueChoice | undefined {
+const directDecisions: Partial<Record<DialogueChoice['action'], RegExp>> = {
+  promise: /^(好[，,。！!]?|嗯[，,。！!]?)?(我(?:答应|会赴约|愿意同行|会去|定会去|可以同行|一定来)|到时.{0,6}(?:见|来)|我来陪你)/,
+  decline: /^(抱歉[，,。！!]?)?(我(?:这趟|那天|这次)?(?:去不了|来不了|赶不过|没空|不便前往|不能.{0,5}(?:去|同行|赴约)|不赴约)|这趟(?:去|来)不了)/,
+  apology: /^(抱歉|对不起|我来道歉|那[日天].{0,8}(?:抱歉|对不起|是我不对)).*(?:失约|没来|没赴约)|^我为.{0,10}失约.{0,6}道歉/,
+  investigate: /^(我|我们|咱们)?(?:先|留下)?(?:查清|查查|查一查|留下看看|先去看看)/,
+  detour: /^(我|我们|咱们)?(?:先)?(?:从后坡绕|走后坡|绕[行路道])/,
+};
+
+export function matchDialogueInput(text: string, node: DialogueNode, exactOrDecision = false): DialogueChoice | undefined {
   const written = text.normalize('NFKC').replace(/\s/g, '');
   const unlocked = node.choices.filter((choice) => !choice.lockReason);
   const exact = unlocked.find((choice) => choice.label.normalize('NFKC').replace(/\s/g, '') === written);
   if (exact) return exact;
+  if (exactOrDecision) {
+    if (/[?「」“”]/.test(written)) return undefined;
+    return unlocked.find(({ action }) => directDecisions[action]?.test(written) &&
+      (action !== 'promise' || !/不(?:会|能|想|敢|一定)|去不了|来不了|赶不过|没空/.test(written)));
+  }
   const intent = spokenIntents.find(([action, match]) =>
     unlocked.some((choice) => choice.action === action) && match.test(written) &&
     (action !== 'promise' || !/不(?:会|能|想|敢)|去不了|来不了|赶不过|没空/.test(written)))?.[0];

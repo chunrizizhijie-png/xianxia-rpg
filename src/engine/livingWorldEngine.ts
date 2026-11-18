@@ -2,12 +2,15 @@ import { CHARACTERS as BASE_CHARACTERS } from '../data/characters';
 import { EXTRA_CHARACTERS, NpcWorldStatus, WORLD_REGIONS } from '../data/worldSandbox';
 import { REALMS } from '../data/realms';
 import { NPC_PROFILES } from '../data/npcProfiles';
+import { ENEMIES } from '../data/itemsAndSkills';
 import { RETREAT_CALLS } from '../data/retreatCalls';
 import type { JourneyState } from '../types/journey';
 import { getHerbTrip, HERBALIST, HERB_VALLEY, settleHerbJourney } from './herbJourney';
+import { canKeepNpcMeeting, npcMeetingAt } from './npcPlans';
 import {
   CharacterData,
   EnemyConfig,
+  EventChoice,
   GameEvent,
   PlayerState,
 } from '../types/game';
@@ -55,6 +58,7 @@ export function createSparEnemyFromCharacter(
     id: `spar_${charData.id}`,
     name: `${charData.name}（切磋演武）`,
     realmName: `${charData.sect} · ${realm.name}`,
+    realmIndex: realm.index,
     hp: Math.round(realm.baseHp * 1.15),
     atk: Math.round(realm.baseAtk * 1.1),
     def: realm.baseDef,
@@ -83,6 +87,33 @@ export function createSparEnemyFromCharacter(
   };
 }
 
+export function rescueEventId(charId: string): string {
+  return `intervene_rescue_${charId}`;
+}
+
+function rescueAlreadySent(journey: JourneyState, charId: string): boolean {
+  const key = rescueEventId(charId);
+  return Boolean(journey.retreatNotices?.includes(key) ||
+    journey.memories[charId]?.some((memory) => memory.id.startsWith(`event:${key}:`)));
+}
+
+export function markRescueSent(journey: JourneyState, charId: string): JourneyState {
+  return rescueAlreadySent(journey, charId) ? journey : {
+    ...journey, retreatNotices: [...(journey.retreatNotices ?? []), rescueEventId(charId)],
+  };
+}
+
+function interventionThreat(status: NpcWorldStatus): EnemyConfig {
+  const crisisId = status.interveneType === 'rescue' ? NPC_PROFILES[status.charId]?.rescue?.enemyId : undefined;
+  return ENEMIES.find((enemy) => enemy.id === crisisId) ??
+    [...ENEMIES].reverse().find((enemy) => enemy.realmIndex <= status.realmIndex) ?? ENEMIES[0];
+}
+
+function reasonToAvoidCombat(player: PlayerState, enemy: EnemyConfig): string | undefined {
+  if (player.realmIndex < enemy.realmIndex) return '这名对手的修为在你之上';
+  if (player.hp * 2 <= player.maxHp || player.injury >= 40) return '你现在伤势太重';
+}
+
 export function buildInterveneEvent(
   charData: CharacterData,
   status: NpcWorldStatus,
@@ -91,14 +122,10 @@ export function buildInterveneEvent(
   const regionName =
     WORLD_REGIONS.find((r) => r.id === status.regionId)?.name ?? '九州秘境';
   const npcRealm = REALMS[status.realmIndex] ?? REALMS[3];
-  const dangerEnemyId =
-    player.realmIndex >= 11
-      ? 'inner_demon_shadow'
-      : player.realmIndex >= 8
-        ? 'realm_golem'
-        : player.realmIndex >= 4
-          ? 'flame_python'
-          : 'puppet_deacon';
+  const enemy = interventionThreat(status);
+  const dangerEnemyId = enemy.id;
+  const combatLimit = reasonToAvoidCombat(player, enemy);
+  const enemyName = `${enemy.name}（${enemy.realmName}）`;
 
   const rewardPillId =
     player.realmIndex >= 11
@@ -110,66 +137,93 @@ export function buildInterveneEvent(
           : 'foundation_pill';
 
   if (status.interveneType === 'rescue') {
+    const crisis = NPC_PROFILES[charData.id]?.rescue;
+    const bloodCost = Math.round(player.maxHp * 0.3);
+    const senseNeeded = REALMS[enemy.realmIndex].baseSense;
+    const directChoices: EventChoice[] = [
+      {
+        id: 'rescue_fight',
+        text: `赶到阵前接应，正面迎战${enemy.name}`,
+        successOutcome: {
+          text: `你破开阵边的障碍，让${charData.name}带人先走。追兵已赶到身前。`,
+          characterAffection: { charId: charData.id, delta: 26, emotion: 'injured' },
+          triggerBattleEnemyId: dangerEnemyId,
+        },
+      },
+      {
+        id: 'rescue_blood_shield',
+        text: '耗去自身三成气血撑住退路，接她突围',
+        successOutcome: {
+          text: `你以精血撑开一条退路，${charData.name}带人穿过阵隙。她替你包扎好伤口，留下一枚破境丹。`,
+          hpDelta: -bloodCost,
+          injuryDelta: 18,
+          expDelta: Math.round(REALMS[player.realmIndex].maxExp * 0.22),
+          itemGainId: rewardPillId,
+          characterAffection: { charId: charData.id, delta: 32, emotion: 'shy' },
+        },
+      },
+      {
+        id: 'rescue_sense_snipe',
+        text: '从阵外辨明破绽，把敌首引离退路',
+        check: { stat: 'sense', threshold: senseNeeded, label: `神识 ≥ ${senseNeeded}` },
+        successOutcome: {
+          text: `你辨出阵眼的破绽。${charData.name}照着你指的方向把人带了出去，回身踏碎最后一道锁纹。`,
+          expDelta: Math.round(REALMS[player.realmIndex].maxExp * 0.25),
+          spiritStonesDelta: 150,
+          itemGainId: rewardPillId,
+          characterAffection: { charId: charData.id, delta: 24, emotion: 'smile' },
+        },
+        failOutcome: {
+          text: '敌首识破了你的试探，回手震来一道阵波。同行的修士拖你退到阵外，退路得另找。',
+          hpDelta: -Math.round(player.maxHp * 0.38),
+          injuryDelta: 24,
+          characterAffection: { charId: charData.id, delta: 0, emotion: 'injured' },
+        },
+      },
+    ];
     return {
-      id: `intervene_rescue_${charData.id}_${Date.now()}`,
-      title: `【生死驰援】${charData.name}的血书求救`,
+      id: rescueEventId(charData.id),
+      title: `${charData.name}从${regionName}传来急讯`,
       category: 'encounter',
-      description: `你御剑疾驰赶至「${regionName}」，只见${charData.name}（${npcRealm.name}）嘴角溢血，正被强敌死死困在杀阵中央！一旦救援失利，你亦可能身陷重围！`,
+      requiredCharId: charData.id,
+      description: [
+        crisis?.message ?? `${charData.name}在${regionName}遇伏，正守着退路等接应。`,
+        combatLimit
+          ? `守在前路的是${enemyName}。${combatLimit}，她请你在安全处代传消息。`
+          : `守在前路的是${enemyName}。你可以进阵接应，也可以请援手绕过去。`,
+      ].join('\n\n'),
       choices: [
+        ...(!combatLimit ? directChoices : []),
         {
-          id: 'rescue_fight',
-          text: `悍然拔剑杀入阵中，与${charData.name}并肩死战！（高风险实战，胜获重谢）`,
+          id: 'rescue_call_backup',
+          text: crisis?.support ?? '留在安全处，把方位传给能出手的修士',
           successOutcome: {
-            text: `你长啸一声破开杀阵，挡在${charData.name}身前迎战强敌！`,
-            characterAffection: { charId: charData.id, delta: 26, emotion: 'injured' },
-            triggerBattleEnemyId: dangerEnemyId,
+            text: crisis?.resolution ?? `援手收到方位后从侧路接出了${charData.name}。她脱身后给你回了信。`,
+            memoryKind: 'help',
+            characterAffection: { charId: charData.id, delta: 2 },
           },
         },
-        {
-          id: 'rescue_blood_shield',
-          text: `燃烧自身 30% 气血与精元，强行震碎杀阵带她突围（损血增内伤，必定救出）`,
-          successOutcome: {
-            text: `你一口精血喷在法器之上，硬抗杀阵反噬将${charData.name}拦腰抱出重围！她看着你苍白的面容，眼眶通红，将珍藏的破境丹塞入你怀中！`,
-            hpDelta: -Math.round(player.maxHp * 0.3),
-            injuryDelta: 18,
-            expDelta: Math.round(REALMS[player.realmIndex].maxExp * 0.22),
-            itemGainId: rewardPillId,
-            characterAffection: { charId: charData.id, delta: 32, emotion: 'shy' },
-          },
-        },
-        {
-          id: 'rescue_sense_snipe',
-          text: `暗中潜伏，以神识锁定敌首破绽一击必杀（检定：神识 ≥ ${npcRealm.baseSense}）`,
-          check: {
-            stat: 'sense',
-            threshold: npcRealm.baseSense,
-            label: `神识 ≥ ${npcRealm.baseSense}`,
-          },
-          successOutcome: {
-            text: `你神识如电洞穿阵眼，一剑重创敌首！${charData.name}趁势反击大获全胜，对你刮目相看！`,
-            expDelta: Math.round(REALMS[player.realmIndex].maxExp * 0.25),
-            spiritStonesDelta: 150,
-            itemGainId: rewardPillId,
-            characterAffection: { charId: charData.id, delta: 24, emotion: 'smile' },
-          },
-          failOutcome: {
-            text: `你的神识刺探被敌首察觉，反遭杀阵余波重创，两人狼狈突围，双双负伤！`,
-            hpDelta: -Math.round(player.maxHp * 0.38),
-            injuryDelta: 24,
-            characterAffection: { charId: charData.id, delta: 6, emotion: 'injured' },
-          },
-        },
+        { id: 'rescue_decline', text: '回信说明无法接应，请她另寻援手', successOutcome: {
+          text: `${charData.name}收下回信，让自己的同门去联络当地守阵人。`,
+          memoryKind: 'decline',
+          characterAffection: { charId: charData.id, delta: 0, emotion: 'normal' },
+        } },
       ],
     };
   }
 
   if (status.interveneType === 'co_explore') {
+    const standBack: EventChoice = {
+      id: 'co_wait',
+      text: '记下遗府方位，等有把握了再来',
+      successOutcome: { text: `你把路线记下来。${charData.name}先收起探阵用的符，到外面与你会合。` },
+    };
     return {
       id: `intervene_explore_${charData.id}_${Date.now()}`,
       title: `【秘境同探】与${charData.name}共闯古修丹殿`,
       category: 'secret_realm',
-      description: `「${regionName}」深处的古修遗府禁制狂暴闪烁，${charData.name}邀你合力破阵。殿内既有失传的破境金丹，亦埋伏着致命机关与镇殿凶兽！`,
-      choices: [
+      description: `「${regionName}」的古修遗府锁着一只丹匣，守在里面的是${enemyName}。${combatLimit ? `${combatLimit}，${charData.name}请你留在外围。` : `${charData.name}邀你一道进殿。`}`,
+      choices: combatLimit ? [standBack] : [
         {
           id: 'co_fight_guardian',
           text: `正面强攻镇殿凶兽，平分殿内秘宝！（触发高危战斗）`,
@@ -213,6 +267,7 @@ export function buildInterveneEvent(
             characterAffection: { charId: charData.id, delta: -45, emotion: 'blackened' },
           },
         },
+        standBack,
       ],
     };
   }
@@ -222,9 +277,9 @@ export function buildInterveneEvent(
       id: `intervene_aid_${charData.id}_${Date.now()}`,
       title: `【护法渡劫】助${charData.name}冲击境界瓶颈`,
       category: 'encounter',
-      description: `${charData.name}正在「${regionName}」盘膝渡劫，九天劫云翻滚，周围更有宵小蠢蠢欲动。`,
+      description: `${charData.name}正在「${regionName}」盘膝护住经脉。阵外出现了${enemyName}。${combatLimit ? `${combatLimit}，可在阵内搭一把手。` : ''}`,
       choices: [
-        {
+        ...(!combatLimit ? [{
           id: 'aid_slay_invader',
           text: `守在阵外斩杀前来偷袭的域外心魔/劫修！（触发战斗）`,
           successOutcome: {
@@ -232,7 +287,7 @@ export function buildInterveneEvent(
             characterAffection: { charId: charData.id, delta: 22, emotion: 'smile' },
             triggerBattleEnemyId: dangerEnemyId,
           },
-        },
+        }] satisfies EventChoice[] : []),
         {
           id: 'aid_share_mp',
           text: `渡入自身半数灵力与气运助她稳固道基（耗灵力，共悟破境天机）`,
@@ -351,16 +406,27 @@ function applyAgenda(journey: JourneyState, status: NpcWorldStatus): NpcWorldSta
     };
   }
 
+  const meeting = npcMeetingAt(journey, status.charId);
+  if (meeting && canKeepNpcMeeting(journey, status.charId, day)) {
+    return {
+      ...status, regionId: meeting.regionId,
+      activityText: `依约等你来谈「${meeting.npcTask?.subject}」`,
+      activityKey: `npc-meeting:${meeting.id}`,
+      canIntervene: false, availableUntilDay: meeting.day + 1,
+    };
+  }
+
   const scheduled = scheduledStop(status.charId, day, journey.seed);
   if (!scheduled) return status;
   const { stop, startDay } = scheduled;
   const activityKey = `${stop.regionId}:${startDay}`;
+  const rescueClosed = stop.type === 'rescue' && rescueAlreadySent(journey, status.charId);
   return {
     ...status,
     regionId: stop.regionId,
-    activityText: stop.activity,
+    activityText: rescueClosed ? NPC_PROFILES[status.charId]?.rescue?.aftermath ?? '巡查守阵一带的退路' : stop.activity,
     activityKey,
-    canIntervene: activityKey !== status.activityKey || status.canIntervene,
+    canIntervene: !rescueClosed && (activityKey !== status.activityKey || status.canIntervene),
     interveneType: stop.type,
     interveneLabel: INTERVENTION_LABELS[stop.type],
     availableUntilDay: startDay + stop.days - 1,
@@ -403,6 +469,12 @@ export function getNpcAgendaReply(journey: JourneyState, charId: string): string
     return status.activityKey === 'herb_meeting'
       ? '「药篓在门边。在约好的日子到药庐找我，我们一起启程。」'
       : '「昨夜才从山里回来。药炉刚开，今日我在这里歇口气。」';
+  }
+  if (status.activityKey?.startsWith('npc-meeting:')) {
+    return '「我已到了约好的地方。前几日说的事，你若有空就慢慢讲给我听。」';
+  }
+  if (status.interveneType === 'rescue' && rescueAlreadySent(journey, charId)) {
+    return '「急讯已经传给了接应的人。我会留在此处，照看回来的路。」';
   }
   return scheduledStop(charId, journey.day, journey.seed)?.stop.reply ??
     `「我今日${status.activityText}。若事情办早了，便多留一会儿。」`;
@@ -490,21 +562,10 @@ export function findRetreatInterruption(
     const candidate = characters.find((character) => {
       const status = state.npcStatuses[character.id];
       return status?.canIntervene && status.regionId === journey.regionId &&
-        status.interveneType === 'rescue' && !seen.includes(`intervene_rescue_${character.id}`);
+        status.interveneType === 'rescue' && !rescueAlreadySent(state, character.id);
     });
     if (candidate) {
-      const event = buildInterveneEvent(candidate, state.npcStatuses[candidate.id], player);
-      return {
-        day: current,
-        event: {
-          ...event,
-          choices: [...event.choices, {
-            id: 'keep_retreat',
-            text: '留下回信，致意后继续闭关',
-            successOutcome: { text: `${candidate.name}收到了回信，派人去寻能就近相助的同门。` },
-          }],
-        },
-      };
+      return { day: current, event: buildInterveneEvent(candidate, state.npcStatuses[candidate.id], player) };
     }
   }
 }
@@ -566,19 +627,14 @@ export function simulateWorldTick(
 
   const status = newStatuses[urgent.id];
   const event = buildInterveneEvent(urgent, status, player);
-  const privateCrisis = urgent.proactiveVisitEvents?.find((visit) => /求|紧急|追杀|遇险/.test(visit.title));
   return {
-    nextJourney: {
+    nextJourney: markRescueSent({
       ...nextJourney,
       lastNoticeDay: nextJourney.day,
       npcStatuses: { ...newStatuses, [urgent.id]: { ...status, canIntervene: false } },
-    },
+    }, urgent.id),
     worldRumors,
-    proactiveEvent: {
-      ...event,
-      requiredCharId: urgent.id,
-      description: privateCrisis ? `${privateCrisis.description}\n\n${event.description}` : event.description,
-    },
+    proactiveEvent: event,
   };
 }
 

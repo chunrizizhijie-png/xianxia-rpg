@@ -11,6 +11,15 @@ export interface NpcStop {
 export interface NpcProfile {
   greeting: string;
   letter: string;
+  voice: string;
+  inquiry: string;
+  rescue?: {
+    enemyId: string;
+    message: string;
+    support: string;
+    resolution: string;
+    aftermath: string;
+  };
   privateTopic: {
     question: string;
     answer: string;
@@ -27,6 +36,15 @@ export const NPC_PROFILES: Record<string, NpcProfile> = {
   shen_qingqiu: {
     greeting: '沈清秋把剑往身侧让了半寸。「坐。你是来借剑，还是来借我？」',
     letter: '玉简里先传来收剑入鞘的轻响。「我在外头。你说短些，我听着。」',
+    voice: '惜字如金，答得具体。遇事先问受伤的人和归路，关心人时只说一件能做的小事。',
+    inquiry: '查剑宗巡山簿，向守阵弟子打听',
+    rescue: {
+      enemyId: 'puppet_deacon',
+      message: '沈清秋沿断符找到了困在锁阵里的两个外门弟子。她把剑压在阵眼上，维持着一条退路，腾不出手挡住阴傀宗的追兵。',
+      support: '把断崖和阵眼的方位传给太虚剑宗的巡山队',
+      resolution: '巡山弟子绕到背阴坡接走了人。暮色落下时，沈清秋回信说，两名弟子都已回到山门。',
+      aftermath: '沿山道复查外门弟子的撤离路线',
+    },
     privateTopic: {
       question: '问她为何随身带两枚剑符',
       answer: '「一枚是我的。另一枚你别碰。」她理齐匣里的两枚剑符，手没有松开。',
@@ -45,6 +63,15 @@ export const NPC_PROFILES: Record<string, NpcProfile> = {
   ye_liuli: {
     greeting: '夜琉璃将空杯转向你。「茶剩一盏。你先坐，还是先回答我一个问题？」',
     letter: '「你也挑这个时候来找我？」玉简里传来她的笑声，「慢慢说，隔墙的人刚走。」',
+    voice: '起先像在逗人，说到价钱、旧账和人命便把话说直。替人保密，也会讨价还价。',
+    inquiry: '向鬼市行商打听暗号、货物和旧账',
+    rescue: {
+      enemyId: 'rogue_cultivator',
+      message: '夜琉璃把两个铺里的伙计藏进后院。黑煞散修守着东巷，她若一人脱身倒也容易，伙计却过不去。',
+      support: '请巡市的执事从西巷打开后门，接走铺里的伙计',
+      resolution: '执事从西巷接到了人。夜琉璃拆下门口的座牌，换了一处落脚，入夜后才传回消息。',
+      aftermath: '在另一处茶摊清点旧铺留下的东西',
+    },
     privateTopic: {
       question: '问她在鬼市替谁留了一个座',
       answer: '「替一个还不起债的人。」她放下杯沿挡着的座牌，「姓氏就免了。」',
@@ -63,6 +90,8 @@ export const NPC_PROFILES: Record<string, NpcProfile> = {
   lin_waner: {
     greeting: '林婉儿用袖口拭净手上的药末。「来得正好。手伸过来，我看看这副脉又让你糟蹋成什么样了。」',
     letter: '「等我把炉盖压上。好了，听得见。你那边可是缺药？」',
+    voice: '说话像在炉边同熟人打商量，偶尔揶揄一句。讲药会问症状和火候，遇到拿不准的事会请人留个样。',
+    inquiry: '查药庐账册，问采药人或来谷里的药商',
     privateTopic: {
       question: '问药庐里为什么有一只始终封着的药柜',
       answer: '「是我没配成的方子。」她捏着钥匙，「还有一味的分量没想明白，我先就自己看看。」',
@@ -81,6 +110,8 @@ export const NPC_PROFILES: Record<string, NpcProfile> = {
   mu_qingge: {
     greeting: '慕清歌掌心落在弦上，余音止了。「我看你站了一会儿。想听完这一曲，还是说说来意？」',
     letter: '「我才把琴弦松下来。此刻清静，你想说什么？」',
+    voice: '听完才开口，问的往往是对方刚漏掉的半句。说话温和，遇到无礼的要求会平静地收琴离席。',
+    inquiry: '问天音阁同门和沿途乐师，核对曲谱与行旅见闻',
     privateTopic: {
       question: '问她曲谱里空着一拍是何缘故',
       answer: '「那一拍该有人接。」指尖停在纸上，「我如今还不想换另一个人。」',
@@ -99,6 +130,15 @@ export const NPC_PROFILES: Record<string, NpcProfile> = {
   ao_shuanghua: {
     greeting: '敖霜华把靴上的泥在门槛上蹭掉。「你选今日来得巧。我刚忙完，先说是来玩还是来求我。」',
     letter: '「你听得清么？风太吵。我找块背风的石头，你等一下。」',
+    voice: '怕人小瞧，开口直截了当。嘴上嫌麻烦，做事时却会先找一条能带人回来的路。',
+    inquiry: '沿水脉辨认旧路，向龙宫巡水人查问',
+    rescue: {
+      enemyId: 'flame_python',
+      message: '雷泽渡口那道冰路被赤焰魔蟒截断。敖霜华在浅滩挡住热浪，身后还护着两个过不了河的行人。',
+      support: '在安全的岸边传出渡口方位，请雷墟守阵人从下游接应',
+      resolution: '守阵人引开魔蟒，敖霜华带着受困的行人从浅滩绕回来了。她托渡工把消息带给你。',
+      aftermath: '陪渡工复查已改道的雷泽渡口',
+    },
     privateTopic: {
       question: '问她袖中那枚旧龙鳞是谁的',
       answer: '「我的。小时候掉的。」她重新掖紧袖口，「留着有用，别借。」',
@@ -117,6 +157,8 @@ export const NPC_PROFILES: Record<string, NpcProfile> = {
   su_xinghe: {
     greeting: '苏星河把铜筹拢到碗里。「恰好差一道难题。你给我带了淋过雨的靴子，还是件新鲜事？」',
     letter: '「你先别猜我是不是算到你了。我刚吃完饭，正好有空。」',
+    voice: '好奇时先问一两个可核对的细节，会大方承认算错；从不把猜到的事说成亲眼见过。',
+    inquiry: '比对星历、驿站换更记录和旧地志',
     privateTopic: {
       question: '问她为什么把自己的卦签反放',
       answer: '「有一处我看不懂。先留在我这里。」她用小指压住卦签，「今夜先讲别人的事。」',
