@@ -119,3 +119,15 @@ test('the opening question reaches the model, and generated speech stops when an
   assert.equal(spokenReply('我在药庐。\n我在药庐。', person.name), '我在药庐。');
   assert.equal(spokenReply('用户：下一句我来说。', person.name), '');
 });
+
+test('a new day carries the last actual exchange into both model calls, with speakers and date', () => {
+  const history = [line('我一直没敢拆那封家书。', 29), line('你怕信里写了什么？', 29, 'assistant'),
+    line('今天也来了。', 30, 'assistant')];
+  const messages = npcChatMessages(person, runtime, player, base(), history, '怕他们让我回去。', '接续她上次的问题。');
+  const decision = npcDecisionMessages(person, runtime, base(), history, '怕他们让我回去。', { talk: '交谈' });
+  for (const prompt of [messages, decision]) {
+    assert.ok(prompt.some(m => m.role === 'user' && /第29日.*家书/u.test(m.content)));
+    assert.ok(prompt.some(m => m.role === 'assistant' && /怕信里写了什么/u.test(m.content)));
+  }
+  assert.equal(groundedMemoryReply(base(), person.id, history, '我还记得那天我们坐在雨里。'), undefined);
+});

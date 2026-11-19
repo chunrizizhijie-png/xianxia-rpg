@@ -1,3 +1,5 @@
+import { dayReferences, mentionedRegions } from './npcCalendar';
+
 // The small model sometimes continues a transcript past its own turn, especially
 // after a quoted exchange. Apply the same cleanup to streaming and final text.
 export function spokenReply(raw: string, name: string): string {
@@ -20,4 +22,15 @@ export function spokenReply(raw: string, name: string): string {
     previous = words;
     return !repeated;
   }).join('').trim();
+}
+
+export function memorySpeech(grounded: string, generated: string, today: number): string {
+  const quote = grounded.match(/「([^」]+)」/u)?.[1];
+  const dates = dayReferences(grounded, today).sort().join(',');
+  const places = mentionedRegions(grounded).map(region => region.id).join(',');
+  if (dates !== dayReferences(generated, today).sort().join(',') ||
+      places !== mentionedRegions(generated).map(region => region.id).join(',')) return grounded;
+  if (quote && generated.includes(quote)) return generated;
+  if (/我记住了|我记下了/u.test(grounded) && /记下|记着|记住|放在心里|替你守/u.test(generated)) return generated;
+  return grounded;
 }

@@ -13,6 +13,9 @@ const REMEMBER_REQUEST = /记住|记下|别忘|别告诉|别对旁人说|只告�
 const EXPLICIT_RECALL = /记得[吗么]|记得.{1,40}(?:吗|么|[？?])|还记得|记不记得|还记着|记住了[吗么]|有没有印象|想得起|想不想得起|(?:方才|刚才|上[一次回句]|之前|先前|提过|说过).{0,25}(?:什么|哪|谁|怎|为何|叫啥|[吗么？?])/u;
 
 export function isMemoryTurn(line: string): boolean {
+  // Recalling an experience aloud is a contribution to the conversation.
+  if (/^(?:其实|唉[，, ]*|说起来[，, ]*)?我(?:一直|也|现在|到现在)?还?记得/u.test(line) &&
+      !/你.{0,2}记得|记不记得|帮我记住|请记住/u.test(line)) return false;
   if (EXPLICIT_RECALL.test(line)) return true;
   return REMEMBER_REQUEST.test(line) && !/见面|赴约|约见|取消|改期|查访|帮.{0,8}查/u.test(line);
 }
@@ -135,6 +138,20 @@ export function npcPlanLabel(task: StoryRecord | undefined): string | undefined 
     : '第 ' + task.day + ' 日回信 · ' + task.npcTask.subject;
 }
 
+export function continueOfflineChat(history: NpcChatMessage[], line: string, fallback: string, familiar: boolean): string {
+  const last = history[history.length - 1];
+  if (!last || last.role !== 'assistant' || last.scripted) return fallback;
+  if (last.content.includes('陪你听一会儿，还是替你拿个主意')) {
+    if (/听|陪|不用.{0,4}(?:想|说)|不必/u.test(line)) return '好。你照自己的意思慢慢说，我先不打断。';
+    if (/主意|怎么|想想|办法|你觉得/u.test(line)) return '那我们一件件来。眼下最让你为难的，是还没发生的事，还是已经发生的那件？';
+  }
+  const previous = history.slice(-6).filter(turn => turn.role === 'assistant');
+  if (!previous.some(turn => turn.content === fallback)) return fallback;
+  const alternatives = familiar ? ['原来你是这么想的。接着说，我想听完。', '这回我倒想知道，你自己最想怎么做？', '嗯。你想从哪儿讲起都成。']
+    : ['原来如此。我先前没想到这一层。', '这里我还没弄清。能再说得细些么？', '你再往下讲讲，我想听完。'];
+  return alternatives.find(reply => !previous.some(turn => turn.content === reply)) ?? fallback;
+}
+
 function currentScene(character: CharacterData, runtime: CharacterRuntimeState, journey: JourneyState, line: string): string {
   const status = journey.npcStatuses[character.id];
   const location = status?.regionId ?? journey.regionId;
@@ -143,10 +160,12 @@ function currentScene(character: CharacterData, runtime: CharacterRuntimeState, 
   const ourOrders = journey.craft?.orders.filter(order => order.maker === character.id) ?? [];
   const orders = ourOrders.slice().sort((a, b) => Number(line.includes(craftItemName(b.recipeId))) - Number(line.includes(craftItemName(a.recipeId))) || b.id - a.id).slice(0, 2);
   const plan = npcPlanLabel(pendingNpcTask(journey, character.id));
+  const mood = { normal: '平静', smile: '高兴', shy: '羞涩', angry: '生气', injured: '带伤', blackened: '戒备' }[runtime.emotion];
   return [
     '今天第' + journey.day + '日，明日第' + (journey.day + 1) + '日。你在' + regionName(location) + '；' + mode + '。',
     status?.activityText && '眼下：' + status.activityText + (status.availableUntilDay !== undefined ? '（此行至第' + status.availableUntilDay + '日）' : ''),
-    '交情：' + relation.label + (relation.label === '有隔阂' ? '。' + relation.inviteReason : ''),
+    '交情：' + relation.label + '，好感' + runtime.affection + '，此刻' + (mood ?? '平静') +
+      (runtime.isSoulmate ? '，彼此已结契' : '') + (relation.label === '有隔阂' ? '。' + relation.inviteReason : ''),
     plan && '已约定：' + plan.slice(0, 105),
     character.id === HERBALIST && herbJournalLine(journey),
     ...orders.map(order => '受托制作' + craftItemName(order.recipeId) + '：' + (order.dueDay <= journey.day ? '成品正待领取' : '尚未交付')
@@ -176,27 +195,49 @@ function recentTurns(history: NpcChatMessage[], today: number, maxChars: number)
   return recent;
 }
 
+// At the first exchange on a later day, a short answer may refer to the other
+// person's last question. Carry both voices, with the original date attached.
+function previousExchange(history: NpcChatMessage[], today: number): ChatCompletionMessage[] {
+  const newTurns = history.filter(turn => turn.role === 'user' && turn.day === today).length;
+  if (newTurns >= 3) return [];
+  for (let index = history.length - 2; index >= 0; index--) {
+    const said = history[index];
+    const heard = history[index + 1];
+    if (said.role !== 'user' || said.scripted || said.day === undefined || said.day >= today ||
+        (newTurns > 0 && today - said.day > 3) || heard.role !== 'assistant' || heard.day !== said.day) continue;
+    return [{ role: 'user', content: `（第${said.day}日的旧话）${said.content.slice(0, 95)}` },
+      { role: 'assistant', content: spokenLines(heard.content).slice(0, 100) }];
+  }
+  return [];
+}
+
 export function npcDecisionMessages(
   character: CharacterData, runtime: CharacterRuntimeState, journey: JourneyState, history: NpcChatMessage[],
   line: string, options: Partial<Record<NpcDecision['action'], string>>,
-  topics: { label: string; meaning: string }[] = [],
+  topics: { label: string; meaning: string }[] = [], currentQuestion?: string,
 ): ChatCompletionMessage[] {
   const actions = Object.entries(options).map(([key, rule]) => NPC_DECISIONS[key as NpcDecision['action']] + '：' + rule);
   const setting = [
     '替' + character.name + '决定此刻如何回应。' + (NPC_PROFILES[character.id]?.voice ?? character.personalityTags.join('、')),
-    currentScene(character, runtime, journey, line), ...actions,
+    currentScene(character, runtime, journey, line),
+    currentQuestion && '当前话题起点：' + currentQuestion.slice(0, 170),
+    ...actions,
     ...topics.map(topic => topic.label + '：对方的意思是「' + topic.meaning + '」。'),
-    topics.length ? '只判断对方最后一句的意思。明确提出列出的话题、尊重或施压的态度才选对应话题；不要只凭上文或一个相同的词。'
-      : '明确托付且你愿意才安排。已经推辞的事勿擅自答应。',
-    '寒暄、转述、假设和询价都选继续交谈。只填 JSON 的 action、confidence。意图清楚才填明确，否则填不确定并继续交谈。',
+    '读懂最后一句的意思。能用自己的话表达，不必和选项用词相同。话题只在对方确实选了这一做法时用。',
+    'attitude 是这句话对你的态度。向你倾吐烦恼选倾诉，留意你的身心选关怀，转述别人说的话不算逼你。',
+    'proposal 是对方当下真的想发起的邀约或查访，其余填无。只要有提议或特殊态度，subject 摘录对方这句话中能体现它的原文（最多32字），其余留空。',
+    'action 是你愿意做什么。根据性情、交情和日程决定。同意才选答应见面或答应查访，婉拒就继续交谈；回顾和假设不算提议。难以判断填不确定。',
   ].filter(Boolean).join('\n');
-  return [{ role: 'system', content: setting }, ...recentTurns(history, journey.day, 230),
-    { role: 'user', content: line.slice(0, 500) }];
+  const prior = [...previousExchange(history, journey.day), ...recentTurns(history, journey.day, 230)];
+  const recalled = matchingRecollections(journey, character.id, history, line).find(note =>
+    !prior.some(turn => turn.role === 'user' && typeof turn.content === 'string' && turn.content.includes(note.quote)));
+  const current = recalled ? '较早的原话（仅作背景）：「' + recalled.quote.slice(0, 95) + '」\n现在：' + line.slice(0, 500) : line.slice(0, 500);
+  return [{ role: 'system', content: setting }, ...prior, { role: 'user', content: current }];
 }
 
 export function npcChatMessages(
   character: CharacterData, runtime: CharacterRuntimeState, player: PlayerState, journey: JourneyState,
-  history: NpcChatMessage[], line: string, direction: string,
+  history: NpcChatMessage[], line: string, direction: string, unfolding?: string,
 ): ChatCompletionMessage[] {
   const scene = currentScene(character, runtime, journey, line);
   const events = (journey.memories[character.id] ?? []).filter(m => m.day <= journey.day);
@@ -206,14 +247,16 @@ export function npcChatMessages(
   const system = [
     '你是' + character.name + '，' + character.title + '。对面是' + player.daoName + '。' + (profile?.voice ?? character.personalityTags.join('、')),
     scene,
+    unfolding && '眼前这件事还未决定：' + unfolding.slice(0, 240),
     ...salient.map(entry => '共同经历（第' + entry.day + '日）：' + entry.detail.slice(0, 85)),
     '本轮定下的事：' + direction.slice(0, 190),
-    '只说你自己会说的一两句，接住对方具体的话。可以犹豫、拒绝、开玩笑或追问。辨清传音与当面。履约、丹药、赠物和伤势以当前记录为准；尚未落实就别声称完成。没有印象就问对方。',
+    '用自己的口气接着谈，对方回答了你的问题就顺着答。依据交情决定说到哪一步；旧话只在相关时提起。无需每句都反问。履约和物品以本轮记录为准。',
   ].filter(Boolean).join('\n');
-  const prior = recentTurns(history, journey.day, 380);
+  const prior = [...previousExchange(history, journey.day), ...recentTurns(history, journey.day, 380)];
   const notes = matchingRecollections(journey, character.id, history, line)
     .filter(note => !prior.some(turn => turn.role === 'user' && turn.content === note.quote));
-  const excerpts = notes.map(note => '我' + (note.day ? '第' + note.day + '日' : '先前') + '曾对你说过：「' + note.quote.slice(0, 150) + '」');
+  const excerpts = notes.map(note => '我' + (note.day ? '第' + note.day + '日' : '先前') + '曾对你说过：「' + note.quote.slice(0, 110) + '」' +
+    (note.reply ? ' 当时你回答：「' + note.reply.slice(0, 64) + '」' : ''));
   const content = excerpts.length ? '旧话摘录（只作回忆）：\n' + excerpts.join('\n') + '\n我现在问：' + line.slice(0, 500) : line.slice(0, 500);
   return [{ role: 'system', content: system }, ...prior, { role: 'user', content }];
 }
@@ -227,8 +270,7 @@ export function saveNpcChat(journey: JourneyState, charId: string, messages: Npc
 }
 
 export function deliverNpcLetter(journey: JourneyState, charId: string, record: StoryRecord): JourneyState {
-  const thread = journey.npcChats?.[charId];
-  if (!thread) return journey;
+  const thread = journey.npcChats?.[charId] ?? { day: record.day, regionId: journey.regionId, messages: [] };
   const message: NpcChatMessage = { role: 'assistant', content: record.text, scripted: true, day: record.day };
   return { ...journey, npcChats: { ...journey.npcChats,
     [charId]: { ...thread, messages: [...thread.messages, message].slice(-CHAT_HISTORY_LIMIT) } } };

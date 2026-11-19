@@ -32,8 +32,12 @@ export function relationshipFor(journey: JourneyState, charId: string, runtime?:
   const standing = trust + (explainedAbsence ? 1 : 0);
   const hurt = charId === HERBALIST && awaitsHerbApology(journey);
   const pressure = memories.some((memory) => memory.kind === 'pressure' && journey.day <= memory.day + 1);
+  const lastDemand = [...memories].reverse().find(memory => memory.id.startsWith('social:施压:') && memory.day <= journey.day);
+  const unresolvedDemand = lastDemand && journey.day - lastDemand.day <= 3 &&
+    !memories.some(memory => memory.id === 'social:致歉:' + lastDemand.id);
   const reservations = hurt ? '她想先谈谈你失约的那天'
     : pressure ? '她想先独处一阵'
+    : unresolvedDemand ? '她还介意你上次逼她表态'
     : standing < 0 ? '她对你还存着戒心' : undefined;
   const affection = runtime?.affection ?? 0;
   const established = runtime?.isSoulmate ?? false;

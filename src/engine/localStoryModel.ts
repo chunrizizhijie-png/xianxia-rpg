@@ -2,8 +2,7 @@ import { Wllama, LoggerWithoutDebug, type ChatCompletionMessage } from '@wllama/
 import wasmUrl from '@wllama/wllama/esm/wasm/wllama.wasm?url';
 import { readStoryOutcome, STORY_DIRECTOR, STORY_SCHEMA } from './openStory';
 import { spokenReply } from './npcSpeech';
-import { NPC_DECISIONS } from './npcPlans';
-import { readNpcMove } from './npcIntent';
+import { SOCIAL_ATTITUDES } from './npcSocial';
 
 interface BrowserGpu {
   requestAdapter: () => Promise<{ features: ReadonlySet<string> } | null>;
@@ -41,13 +40,13 @@ export class LocalStoryModel {
       : await loadEngine(false);
   }
 
-  async selectNpcMove(messages: ChatCompletionMessage[], labels: string[], signal: AbortSignal): Promise<string> {
-    if (!this.engine || labels.length <= 1) return NPC_DECISIONS.talk;
+  async selectNpcMove(messages: ChatCompletionMessage[], labels: string[], signal: AbortSignal): Promise<unknown> {
+    if (!this.engine) return;
     try {
       const result = await this.engine.createChatCompletion({
         messages,
         temperature: 0.1,
-        max_tokens: 48,
+        max_tokens: 128,
         cache_prompt: true,
         abortSignal: signal,
         response_format: {
@@ -60,18 +59,21 @@ export class LocalStoryModel {
               properties: {
                 action: { type: 'string', enum: labels },
                 confidence: { type: 'string', enum: ['明确', '不确定'] },
+                attitude: { type: 'string', enum: [...SOCIAL_ATTITUDES] },
+                proposal: { type: 'string', enum: ['无', '邀约', '查访'] },
+                subject: { type: 'string', maxLength: 40 },
               },
-              required: ['action', 'confidence'],
+              required: ['action', 'confidence', 'attitude', 'proposal', 'subject'],
               additionalProperties: false,
             },
           },
         },
       });
       signal.throwIfAborted();
-      return readNpcMove(result.choices[0]?.message.content, labels);
+      return result.choices[0]?.message.content;
     } catch {
       signal.throwIfAborted();
-      return NPC_DECISIONS.talk;
+      return undefined;
     }
   }
 

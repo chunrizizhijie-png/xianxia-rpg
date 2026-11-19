@@ -21,13 +21,15 @@ import {
 } from './herbJourney';
 import { getNpcAgendaReply, refreshNpcAgendas } from './livingWorldEngine';
 import { activeCraftOrder } from './crafting';
+import { chooseNpcOuting, npcOutingScene } from './npcOuting';
 
 export type DialogueChoice = {
   label: string;
   action:
     | 'exchange' | 'greet' | 'agenda' | 'past' | 'private' | 'respect' | 'press' | 'topics'
-    | 'herb' | 'promise' | 'decline' | 'apology' | 'investigate' | 'detour' | 'visit' | 'topic';
+    | 'herb' | 'promise' | 'decline' | 'apology' | 'investigate' | 'detour' | 'visit' | 'topic' | 'outing';
   topic?: CharacterChatOption;
+  outingId?: string;
   absenceId?: string;
   lockReason?: string;
 };
@@ -48,6 +50,7 @@ const back: DialogueChoice = { action: 'greet', label: '换个话题' };
 
 function rememberedReply(character: CharacterData, memory?: NpcMemory): string | undefined {
   if (!memory) return;
+  if (memory.id.startsWith('outing:')) return memory.detail;
   const profile = NPC_PROFILES[character.id];
   if (memory.kind === 'help') {
     const call = RETREAT_CALLS.find((entry) => entry.charId === character.id &&
@@ -120,7 +123,7 @@ export function openConversation({ character, runtime, player, journey }: Dialog
   const status = journey.npcStatuses[character.id];
   const nearby = status?.regionId === journey.regionId;
   const memories = journey.memories[character.id] ?? [];
-  const recentPressure = memories.find((memory) => memory.kind === 'pressure');
+  const recentPressure = [...memories].reverse().find((memory) => memory.id === 'private-boundary' && memory.kind === 'pressure');
   if (!runtime.met || (!nearby && !runtime.hasContact)) return { line: '尚未留下传音印记。', choices: [] };
   if (recentPressure && journey.day <= recentPressure.day + 1 &&
       !(character.id === HERBALIST && isHerbMeetingOpen(journey))) {
@@ -132,6 +135,20 @@ export function openConversation({ character, runtime, player, journey }: Dialog
     character.dialogues[getAffectionStage(runtime.isSoulmate ? runtime.affection : Math.min(59, runtime.affection)).stage]?.[0] ??
     runtime.lastSpokenLine;
   line = rememberedReply(character, personalHistory) ?? line;
+  const lastConfidence = [...memories].reverse().find(memory => memory.id.startsWith('social:倾诉:') ||
+    memory.id.startsWith('social:分享见闻:'));
+  if (lastConfidence && lastConfidence.day < journey.day && journey.day - lastConfidence.day <= 7 &&
+      relationshipFor(journey, character.id, runtime).label !== '有隔阂') {
+    const words = lastConfidence.detail.match(/「(.+?)」/u)?.[1];
+    if (words) {
+      const question = lastConfidence.id.startsWith('social:倾诉:') ? '这两天过得怎么样？' : '后来还有下文么？';
+      const excerpt = words.length > 44 ? words.slice(0, 43) + '…' : words.replace(/[。！？!?]+$/u, '');
+      const greeting = `「你上回说『${excerpt}』。${question}」`;
+      const alreadyAsked = journey.npcChats?.[character.id]?.messages.some(turn =>
+        turn.role === 'assistant' && turn.content === greeting);
+      if (!alreadyAsked) line = greeting;
+    }
+  }
   if (status?.activityKey?.startsWith('npc-meeting:')) line = getNpcAgendaReply(journey, character.id);
   if (character.id === HERBALIST) {
     line = herbGreeting(journey, nearby) ?? (player.injury >= 15 && nearby
@@ -172,6 +189,11 @@ export function openConversation({ character, runtime, player, journey }: Dialog
       character.proactiveVisitEvents?.length) {
     choices.push({ action: 'visit', label: '应她的邀请，坐下来叙谈' });
   }
+  const outing = npcOutingScene(journey, character);
+  if (outing) {
+    if (!missedMeeting && !owesHerbApology) line = outing.line;
+    choices.unshift(...outing.choices.map(option => ({ label: option.label, action: 'outing' as const, outingId: option.id })));
+  }
   return { line, choices };
 }
 
@@ -198,9 +220,16 @@ export function chooseDialogue(
 
   if (!runtime.met || (status?.regionId !== journey.regionId && !runtime.hasContact)) return result('你没有她的传音印记。', []);
   switch (choice.action) {
+    case 'outing': {
+      const turn = choice.outingId && chooseNpcOuting(journey, character, choice.outingId);
+      if (!turn) return { ...result(''), node: openConversation(context), runtime };
+      const node = openConversation({ ...context, journey: turn.journey });
+      return { ...result(turn.line), node: { ...node, line: turn.line }, journey: turn.journey };
+    }
     case 'exchange': {
       if (runtime.hasContact || status?.regionId !== journey.regionId) return result(runtime.lastSpokenLine);
-      const shared = memories.some((memory) => ['help', 'promise', 'confidence', 'topic', 'spar'].includes(memory.kind));
+      const shared = memories.some((memory) => ['help', 'promise', 'confidence', 'topic', 'spar'].includes(memory.kind) ||
+        /^social:(?:关怀|倾诉|分享见闻):/u.test(memory.id));
       if (!shared || relationshipFor(journey, character.id, runtime).label === '有隔阂') {
         return result('她向你一拱手。「有缘还会碰面，今日先在这里说吧。」');
       }
@@ -408,6 +437,15 @@ export function matchDialogueInput(text: string, node: DialogueNode, exactOrDeci
     if (/[?「」“”]/.test(written)) return undefined;
     return unlocked.find(({ action }) => directDecisions[action]?.test(written) &&
       (action !== 'promise' || !/不(?:会|能|想|敢|一定)|去不了|来不了|赶不过|没空/.test(written)));
+  }
+  if (!/[?「」“”]|如果|假如|要是|不想|不用|不必|先别|不要|听说/u.test(written) &&
+      /^(?:我(?:们)?|咱们|那就|先|去|跟|问|请|把|让|给|试|看看|听听)/u.test(written)) {
+    const ranked = unlocked.filter(c => c.action === 'outing').map(choice => {
+      const pairs = new Set(Array.from(choice.label.slice(1), (_, i) => choice.label.slice(i, i + 2)));
+      const score = [...pairs].filter(pair => written.includes(pair)).length;
+      return { choice, score };
+    }).sort((a, b) => b.score - a.score);
+    if (ranked[0]?.score >= 2 && ranked[0].score > (ranked[1]?.score ?? 0) + 1) return ranked[0].choice;
   }
   const intent = spokenIntents.find(([action, match]) =>
     unlocked.some((choice) => choice.action === action) && match.test(written) &&

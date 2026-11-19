@@ -109,3 +109,76 @@ test('consecutive clarifications carry the topic, place and original request acr
   assert.equal(agreed.npcTask.subject, '丹方');
   assert.equal(deriveNpcPlan('那就后天。', { ...second, day: 11 }, person.id), undefined);
 });
+
+test('casual invitations accept or decline with a dated, reproducible answer even when phrased differently', () => {
+  const line = '明天你有没有时间出来约一下？';
+  const results = Array.from({ length: 10 }, (_, seed) => ask({ ...scene(), seed }, line));
+  const accepted = results.find(result => result.confirmed);
+  const declined = results.find(result => !result.confirmed);
+  assert.equal(accepted.confirmed.day, 11);
+  assert.equal(accepted.confirmed.regionId, scene().regionId);
+  assert.ok(declined.spoken.fallback.length > 8);
+  const repeat = ask(JSON.parse(JSON.stringify(declined.journey)), '明天我们一起去走走吧。');
+  assert.equal(repeat.confirmed, undefined);
+  assert.equal(repeat.spoken.fallback, declined.spoken.fallback);
+  assert.equal(repeat.journey.memories[person.id].filter(m => m.kind === 'decline').length, 1);
+});
+
+test('clear semantic proposals still use the player’s words, game calendar and NPC permission', () => {
+  const j = scene();
+  const line = '明晚药庐的茶席，我多留个座给你，肯赏脸吗？';
+  const hint = { action: 'meet', subject: '茶席' };
+  assert.equal(deriveNpcPlan(line, j, person.id), undefined);
+  const meaning = deriveNpcPlan(line, j, person.id, hint);
+  assert.equal(meaning.subject, '茶席');
+  const accepted = applyNpcDecision(meaning, person, runtime, player, j, line, hint);
+  assert.deepEqual(accepted.confirmed, { day: 11, regionId: 'yaowang_valley' });
+  const rejected = applyNpcDecision({ ...meaning, action: 'talk' }, person, runtime, player, j, line, hint);
+  assert.equal(rejected.confirmed, undefined);
+  assert.equal(applyNpcDecision(meaning, person, runtime, player, rejected.journey, line, hint).confirmed, undefined);
+  assert.notEqual(deriveNpcPlan(line, j, person.id, { ...hint, subject: '登仙' }).subject, '登仙');
+  for (const hypothetical of ['如果明晚药庐有茶席呢？', '你还记得上次的茶席吗？', '我不想同你喝茶']) {
+    assert.equal(deriveNpcPlan(hypothetical, j, person.id, hint), undefined);
+  }
+});
+
+test('an earlier memory in the same turn cannot overwrite the new proposal date or place', () => {
+  const result = ask(scene(), '你还记得上次在鬼市听曲的事吗？明天我们在药王谷见面，聊聊药方。');
+  assert.deepEqual(result.confirmed, { day: 11, regionId: 'yaowang_valley' });
+  assert.equal(result.journey.openStory.pending[0].npcTask.subject, '药方');
+  assert.equal(deriveNpcPlan('上回她问我，明天你有没有时间出来约一下？', scene(), person.id), undefined);
+});
+
+test('a familiar face may agree in person without a jade seal; inquiries still require a return channel', () => {
+  const j = scene();
+  const unlinked = { ...runtime, hasContact: false, affection: 0 };
+  const line = '明天在这里见面。';
+  const meaning = deriveNpcPlan(line, j, person.id);
+  const arrange = (world, rt = unlinked) => applyNpcDecision(meaning, person, rt, player, world, line);
+  assert.equal(arrange(j).confirmed, undefined);
+  assert.ok(arrange(j, { ...unlinked, affection: 25 }).confirmed);
+  const acquainted = { ...j, memories: { [person.id]: [{ id: 'social:倾诉:归乡', day: 9, kind: 'story', detail: '你们聊过归乡的事。' }] } };
+  assert.ok(arrange(acquainted).confirmed);
+  assert.ok(npcDecisionOptions(person, unlinked, player, acquainted, line).meet);
+  const remote = { ...acquainted, regionId: 'heishan_market' };
+  assert.equal(arrange(remote).confirmed, undefined);
+  const askAround = '帮我打听千年血参的来处。';
+  assert.equal(applyNpcDecision(deriveNpcPlan(askAround, acquainted, person.id), person, unlinked, player, acquainted, askAround).confirmed, undefined);
+});
+
+test('a polite conditional is an invitation and an unknown place prompts a follow-up before booking', () => {
+  const j = scene();
+  j.npcStatuses[person.id].regionId = 'yaowang_valley';
+  assert.equal(deriveNpcPlan('如果你方便，明天一起去走走吧。', j, person.id).action, 'meet');
+  const line = '明晚在梨花镇我多留一只茶杯给你，肯赏脸么？';
+  const hint = { action: 'meet', subject: '茶杯' };
+  const wait = applyNpcDecision(deriveNpcPlan(line, j, person.id, hint), person, runtime, player, j, line, hint);
+  assert.equal(wait.confirmed, undefined);
+  assert.match(wait.spoken.fallback, /哪里碰面/u);
+  const thread = { day: j.day, regionId: j.regionId, messages: [
+    { role: 'user', content: line, day: j.day }, { role: 'assistant', content: wait.spoken.fallback, day: j.day },
+  ] };
+  const then = ask({ ...j, npcChats: { [person.id]: thread } }, '就在太虚剑巅吧。');
+  assert.deepEqual(then.confirmed, { day: 11, regionId: 'taixu_peak' });
+  assert.equal(then.journey.openStory.pending[0].npcTask.subject, '茶杯');
+});

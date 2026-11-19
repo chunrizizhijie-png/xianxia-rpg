@@ -1,6 +1,7 @@
 import { REALMS } from '../data/realms';
 import { validCraftTalents } from './birth';
 import { isCraftState } from './crafting';
+import { isNpcOuting } from './npcOuting';
 import type { CharacterData, SaveSlotData } from '../types/game';
 import type { JourneyState } from '../types/journey';
 import { createInitialCharacters } from './gameEngine';
@@ -35,6 +36,7 @@ function isJourney(value: unknown): value is JourneyState {
     (value.retreatNotices === undefined || (Array.isArray(value.retreatNotices) &&
       value.retreatNotices.every((id) => typeof id === 'string'))) &&
     (value.openStory === undefined || isOpenStory(value.openStory)) &&
+    (value.outings === undefined || (isRecord(value.outings) && Object.values(value.outings).every(isNpcOuting))) &&
     (value.clearedSites === undefined || (Array.isArray(value.clearedSites) && value.clearedSites.every(id => typeof id === 'string'))) &&
     (value.craft === undefined || isCraftState(value.craft)) &&
     (value.npcChats === undefined || (isRecord(value.npcChats) && Object.values(value.npcChats).every((thread) =>

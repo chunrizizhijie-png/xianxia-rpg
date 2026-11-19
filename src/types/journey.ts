@@ -60,7 +60,20 @@ export interface NpcChatThread {
   recollections?: NpcChatRecollection[];
 }
 
+export type OutingId = 'letter' | 'tea' | 'bell';
+
+export interface NpcOuting {
+  meetingId: string;
+  story: OutingId;
+  startedDay: number;
+  regionId: string;
+  familiar: boolean;
+  path: string[];
+  returnDay?: number;
+}
+
 export interface JourneyState {
+  outings?: Record<string, NpcOuting>;
   craft?: CraftState;
   clearedSites?: string[];
   day: number;
