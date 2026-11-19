@@ -414,6 +414,7 @@ function applyAgenda(journey: JourneyState, status: NpcWorldStatus): NpcWorldSta
   }
 
   const meeting = npcMeetingAt(journey, status.charId);
+  if (status.activityKey?.startsWith('npc-visited:') && status.availableUntilDay === day) return status;
   if (meeting && canKeepNpcMeeting(journey, status.charId, day)) {
     return {
       ...status, regionId: meeting.regionId,

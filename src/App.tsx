@@ -85,10 +85,12 @@ import {
   answerSmallTalk, chooseDialogue, encounterCharacter, matchDialogueInput, openConversation,
   type DialogueChoice, type DialogueNode,
 } from './engine/npcDialogue';
-import { isMemoryTurn, npcChatMessages, npcDecisionMessages, npcPlanLabel, saveNpcChat } from './engine/npcChat';
-import { applyNpcDecision, type NpcDecision, npcDecisionOptions, pendingNpcTask } from './engine/npcPlans';
+import { groundedMemoryReply, npcChatMessages, npcPlanLabel, saveNpcChat } from './engine/npcChat';
+import { routeNpcLine } from './engine/npcIntent';
+import { applyNpcDecision, deriveNpcPlan, npcPlanReply, pendingNpcTask } from './engine/npcPlans';
+import { workshopConversation } from './engine/workshopConversation';
 import { giftRefusal, relationshipFor, storyEventId } from './engine/relationships';
-import { applyStoryOutcome, createStoryPrompt, settleStoryFollowups } from './engine/openStory';
+import { applyStoryOutcome, attendNpcMeeting, createStoryPrompt, settleStoryFollowups } from './engine/openStory';
 import { LocalStoryModel } from './engine/localStoryModel';
 import { CharacterCreationModal } from './components/CharacterCreationModal';
 import { finishBirthDraft, type BirthDraft } from './engine/birth';
@@ -370,7 +372,7 @@ export default function App() {
     const encounterRemains = !releaseDeferredEncounter() && Boolean(activeEvent);
     const tick = simulateWorldTick(from, characterDefs, aged, elapsedDays,
       allowUrgent && !aged.isDead && !encounterRemains && !battle, charStates);
-    const continued = settleStoryFollowups(tick.nextJourney);
+    const continued = settleStoryFollowups(tick.nextJourney, characterDefs);
     setJourney(continued.journey);
     for (const entry of continued.due) {
       appendLog(aged, 'event', entry.text, { ...continued.journey, day: entry.day, regionId: entry.regionId });
@@ -704,35 +706,38 @@ export default function App() {
     }
   };
 
-  const handleTalk = (charId: string, opening?: string) => {
+  const handleTalk = (charId: string, opening?: string, scene = { player, journey, charStates }) => {
     const character = characterDefs.find((entry) => entry.id === charId);
-    const runtime = charStates[charId];
-    if (!character || !runtime || battle || player.isDead || eventVisible || storyJob.current) return;
-    const local = npcStatuses[charId]?.regionId === currentRegionId;
+    const runtime = scene.charStates[charId];
+    if (!character || !runtime || battle || scene.player.isDead || eventVisible || storyJob.current) return;
+    const local = scene.journey.npcStatuses[charId]?.regionId === scene.journey.regionId;
     if (!local && (!runtime.met || !runtime.hasContact)) return;
-    const arrival = encounterCharacter(character, runtime, journey);
+    const arrival = encounterCharacter(character, runtime, scene.journey);
+    const here = arrival?.journey ?? scene.journey;
+    const attendance = local ? attendNpcMeeting(here, character) : { journey: here };
     if (arrival) {
       setCharStates((previous) => ({ ...previous, [charId]: arrival.runtime }));
-      setJourney(arrival.journey);
-      appendLog(player, 'bond', `在${currentRegion.name}结识了${character.name}。`, arrival.journey);
+      appendLog(scene.player, 'bond', `在${currentRegion.name}结识了${character.name}。`, arrival.journey);
     }
-    const entry = openConversation({ character, player, runtime: arrival?.runtime ?? runtime, journey: arrival?.journey ?? journey });
-    const line = arrival?.line ?? opening;
+    if (attendance.journey !== scene.journey) setJourney(attendance.journey);
+    if (attendance.entry) appendLog(scene.player, 'bond', attendance.entry.text, attendance.journey);
+    const entry = openConversation({ character, player: scene.player, runtime: arrival?.runtime ?? runtime, journey: attendance.journey });
+    const line = [attendance.greeting, opening ?? arrival?.line].filter(Boolean).join('\n');
     const node = line ? { ...entry, line } : entry;
-    const history = journey.npcChats?.[charId];
+    const history = attendance.journey.npcChats?.[charId];
     const turns = history?.messages ?? [];
-    const resume = !opening && node.choices.length > 0 && turns.length > 0 &&
-      history?.regionId === currentRegionId && history.greeting === entry.line;
+    const resume = !line && node.choices.length > 0 && turns.length > 0 && history?.day === here.day &&
+      history?.regionId === here.regionId && history.greeting === entry.line;
     setActiveCharId(charId);
     setStoryError(null);
     setConversation({
       charId, node, greeting: entry.line,
-      turns: resume ? turns : [...turns, { role: 'assistant', content: node.line, scripted: true }],
+      turns: resume ? turns : [...turns, { role: 'assistant', content: node.line, scripted: true, day: here.day }],
     });
   };
 
-  const handleDialogueChoice = (choice: DialogueChoice, spoken = choice.label) => {
-    if (!conversation || storyJob.current || choice.lockReason || !conversation.node.choices.includes(choice)) return;
+  const handleDialogueChoice = (choice: DialogueChoice, spoken = choice.label, request?: AbortController) => {
+    if (!conversation || (storyJob.current && storyJob.current !== request) || choice.lockReason || !conversation.node.choices.includes(choice)) return;
     const character = characterDefs.find((entry) => entry.id === conversation.charId);
     const runtime = charStates[conversation.charId];
     if (!character || !runtime) return;
@@ -820,6 +825,21 @@ export default function App() {
     return true;
   };
 
+  const recordNpcReply = (
+    chat: NonNullable<typeof conversation>, character: CharacterData, line: string,
+    response: Omit<NpcChatMessage, 'role' | 'day'>, next = journey, speaker = player,
+  ) => {
+    const turns: NpcChatMessage[] = [...chat.turns, { role: 'user', content: line, day: journey.day },
+      { ...response, role: 'assistant', day: next.day }];
+    setCharStates(previous => ({ ...previous, [character.id]: {
+      ...previous[character.id], lastSpokenLine: response.content, interactionCount: previous[character.id].interactionCount + 1,
+    } }));
+    setConversation({ ...chat, turns });
+    setJourney(saveNpcChat(next, character.id, turns, chat.greeting));
+    appendLog(speaker, 'bond', `与${character.name}交谈\n你：${line}\n${response.content}${response.note ? `\n${response.note}` : ''}`, next);
+    return true;
+  };
+
   const handleNpcReply = async (line: string, character: CharacterData, chat: NonNullable<typeof conversation>) => {
     const runtime = charStates[character.id];
     const request = new AbortController();
@@ -828,15 +848,20 @@ export default function App() {
     setStoryError(null);
     setPendingNpcReply({ input: line, reply: '' });
     try {
-      const options = npcDecisionOptions(character, runtime, player, journey, line);
-      const decision = isMemoryTurn(line) ? undefined : await storyModel.decideNpcAction(
-        npcDecisionMessages(character, runtime, journey, chat.turns, line, options),
-        Object.keys(options) as NpcDecision['action'][], request.signal);
+      const { decision, choice } = await routeNpcLine(storyModel, character, runtime, player, journey, chat, line, request.signal);
       if (request.signal.aborted) return false;
-      const action = decision ? applyNpcDecision(decision, character, runtime, player, journey, line)
-        : { journey, note: undefined, spoken: undefined, direction: '能从旧话找到答案，就回应对方问的具体细节。对方嘱你记下的事只留在这里。' };
-      const messages = npcChatMessages(character, runtime, player, journey, chat.turns, line, action.direction);
-      const generated = await storyModel.replyAsNpc(character.name, messages, request.signal, (partial) => {
+      if (sceneVersion.current.player !== player || sceneVersion.current.journey !== journey) {
+        setStoryError('等候时场面已经变了，可以重新发送。');
+        return false;
+      }
+      if (choice) {
+        handleDialogueChoice(choice, line, request);
+        return true;
+      }
+      const action = applyNpcDecision(decision, character, runtime, player, journey, line);
+      const next = action.journey === journey ? journey : refreshNpcAgendas(action.journey);
+      const messages = npcChatMessages(character, runtime, player, next, chat.turns, line, action.direction);
+      const generated = action.spoken && !action.confirmed ? action.spoken.fallback : await storyModel.replyAsNpc(character.name, messages, request.signal, (partial) => {
         if (!action.spoken && storyJob.current === request && !request.signal.aborted) {
           setPendingNpcReply({ input: line, reply: partial });
         }
@@ -849,13 +874,7 @@ export default function App() {
         setStoryError('等候时场面已经变了，可以重新发送。');
         return false;
       }
-      const reply = action.spoken && !action.spoken.cue.test(generated) ? action.spoken.fallback : generated;
-      const turns: NpcChatMessage[] = [...chat.turns, { role: 'user', content: line, day: journey.day },
-        { role: 'assistant', content: reply, note: action.note, day: journey.day }];
-      setConversation({ ...chat, turns });
-      setJourney(saveNpcChat(action.journey, character.id, turns, chat.greeting));
-      appendLog(player, 'bond', `与${character.name}交谈\n你：${line}\n${reply}${action.note ? `\n${action.note}` : ''}`);
-      return true;
+      return recordNpcReply(chat, character, line, { content: npcPlanReply(action, generated), note: action.note }, next);
     } catch {
       if (!request.signal.aborted) setStoryError('这句话没接上。原话还在输入框里，可以重试。');
       return false;
@@ -869,28 +888,46 @@ export default function App() {
   };
 
   const handlePlayerLine = (line: string) => {
-    if (!conversation || storyJob.current) return false;
+    if (!conversation || storyJob.current || player.isDead || battle || eventVisible) return false;
     if (/^(告辞|我先走了|改日再聊)[。！]?$/.test(line)) {
       setConversation(null);
       return true;
     }
     if (!conversation.node.choices.length) return false;
-    const matchingChoice = matchDialogueInput(line, conversation.node, Boolean(modelName));
-    if (matchingChoice) {
-      handleDialogueChoice(matchingChoice, line);
-      return true;
-    }
     const character = characterDefs.find((entry) => entry.id === conversation.charId);
     if (!character) return false;
+    const workshop = workshopConversation(craftContext, character.id, line, conversation.turns);
+    if (workshop) {
+      const result = workshop.settlement;
+      if (result) {
+        setMaterials(result.materials);
+        setPlayer(result.player);
+      }
+      return recordNpcReply(conversation, character, line, {
+        content: workshop.reply, workshopOffer: workshop.offer, note: result?.message, scripted: true,
+      }, result ? refreshNpcAgendas(result.journey) : journey, result?.player);
+    }
+    const memory = groundedMemoryReply(journey, character.id, conversation.turns, line);
+    if (memory) return recordNpcReply(conversation, character, line, { content: memory, scripted: true });
+    const direct = matchDialogueInput(line, conversation.node, true);
+    if (direct) {
+      handleDialogueChoice(direct, line);
+      return true;
+    }
     if (modelName) return handleNpcReply(line, character, conversation);
+    const plan = deriveNpcPlan(line, journey, character.id);
+    if (plan) {
+      const result = applyNpcDecision(plan, character, charStates[character.id], player, journey, line);
+      return recordNpcReply(conversation, character, line, { content: npcPlanReply(result), note: result.note, scripted: true },
+        result.journey === journey ? journey : refreshNpcAgendas(result.journey));
+    }
+    const choice = matchDialogueInput(line, conversation.node);
+    if (choice) {
+      handleDialogueChoice(choice, line);
+      return true;
+    }
     const reply = answerSmallTalk(line, character, journey);
-    if (!reply) return false;
-    const turns: NpcChatMessage[] = [...conversation.turns, { role: 'user', content: line, day: journey.day },
-      { role: 'assistant', content: reply, scripted: true, day: journey.day }];
-    setConversation({ ...conversation, turns });
-    setJourney(saveNpcChat(journey, character.id, turns, conversation.greeting));
-    appendLog(player, 'bond', `与${character.name}交谈\n你：${line}\n${reply}`);
-    return true;
+    return reply ? recordNpcReply(conversation, character, line, { content: reply, scripted: true }) : false;
   };
 
   const handleInteract = (
@@ -953,7 +990,9 @@ export default function App() {
         return;
       }
     }
-    if (action === 'gift') handleTalk(charId, nextCharacters[charId].lastSpokenLine);
+    if (action === 'gift') handleTalk(charId, nextCharacters[charId].lastSpokenLine, {
+      ...advanced, charStates: nextCharacters,
+    });
   };
 
   const handleTravelRegion = (region: WorldRegion) => {
@@ -1461,7 +1500,7 @@ export default function App() {
         <NpcConversation
           key={conversation.charId}
           character={conversationCharacter}
-          location={conversationRegion?.name ?? '九州'}
+          location={`第 ${journey.day} 日 · ${conversationRegion?.name ?? '九州'}`}
           remote={conversationRegion?.id !== currentRegionId}
           node={conversation.node}
           turns={conversation.turns}

@@ -28,7 +28,7 @@ export interface StoryRecord {
   action?: string;
   text: string;
   fact?: string;
-  npcTask?: { kind: 'inquire' | 'meet'; subject: string };
+  npcTask?: { kind: 'inquire' | 'meet'; subject: string; arrived?: boolean };
 }
 
 export interface OpenStoryState {
@@ -38,6 +38,7 @@ export interface OpenStoryState {
 }
 
 export interface NpcChatMessage {
+  workshopOffer?: { recipeId: string; maker: string; regionId: string; day: number };
   role: 'user' | 'assistant';
   content: string;
   scripted?: boolean;

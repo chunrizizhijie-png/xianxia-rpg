@@ -22,7 +22,8 @@ function isOpenStory(value: unknown) {
     typeof entry.text === 'string' && ['charId', 'action', 'fact'].every((key) =>
       entry[key] === undefined || typeof entry[key] === 'string') &&
     (entry.npcTask === undefined || (isRecord(entry.npcTask) && typeof entry.charId === 'string' &&
-      (entry.npcTask.kind === 'inquire' || entry.npcTask.kind === 'meet') && typeof entry.npcTask.subject === 'string'))));
+      (entry.npcTask.kind === 'inquire' || entry.npcTask.kind === 'meet') && typeof entry.npcTask.subject === 'string' &&
+      (entry.npcTask.arrived === undefined || (entry.npcTask.kind === 'meet' && typeof entry.npcTask.arrived === 'boolean'))))));
 }
 
 function isJourney(value: unknown): value is JourneyState {
@@ -46,6 +47,9 @@ function isJourney(value: unknown): value is JourneyState {
       Array.isArray(thread.messages) && thread.messages.every((message) => isRecord(message) &&
         (message.role === 'user' || message.role === 'assistant') && typeof message.content === 'string' &&
         (message.note === undefined || typeof message.note === 'string') &&
+        (message.workshopOffer === undefined || (message.role === 'assistant' && isRecord(message.workshopOffer) &&
+          typeof message.workshopOffer.recipeId === 'string' && typeof message.workshopOffer.maker === 'string' &&
+          typeof message.workshopOffer.regionId === 'string' && Number.isSafeInteger(message.workshopOffer.day))) &&
         (message.day === undefined || Number.isSafeInteger(message.day)) &&
         (message.scripted === undefined || typeof message.scripted === 'boolean'))))) &&
     ['available', 'promised', 'declined', 'missed', 'fulfilled'].includes(String(value.herb.phase)) &&
@@ -164,12 +168,21 @@ export function restoreJourney(save: SaveSlotData, characters: CharacterData[]):
     seed,
     1 + Math.max(0, Math.floor(save.player.ageMonths) - 16 * 12) * 30,
   );
-  return save.journey
-    ? {
-        ...save.journey,
-        npcStatuses: { ...defaults.npcStatuses, ...save.journey.npcStatuses },
-      }
-    : defaults;
+  if (!save.journey) return defaults;
+  const journey = { ...save.journey, npcStatuses: { ...defaults.npcStatuses, ...save.journey.npcStatuses } };
+  const story = journey.openStory;
+  if (!story) return journey;
+  // Older saves moved a meeting to history as soon as the NPC arrived.
+  const waiting = story.history.filter(entry => entry.npcTask?.kind === 'meet' && entry.charId &&
+    entry.day <= journey.day && journey.day <= entry.day + 1 &&
+    journey.npcStatuses[entry.charId]?.activityKey === 'npc-meeting:' + entry.id &&
+    !story.pending.some(p => p.charId === entry.charId && p.npcTask));
+  if (!waiting.length) return journey;
+  return { ...journey, openStory: { ...story,
+    history: story.history.map(entry => waiting.includes(entry)
+      ? { ...entry, id: entry.id + ':arrived', npcTask: undefined } : entry),
+    pending: [...story.pending, ...waiting.map(entry => ({ ...entry, npcTask: { ...entry.npcTask!, arrived: true } }))],
+  } };
 }
 
 export function writeChronicle(save: SaveSlotData, characters: CharacterData[]): string {

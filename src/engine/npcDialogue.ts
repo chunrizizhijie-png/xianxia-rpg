@@ -8,7 +8,7 @@ import type {
   PlayerState,
 } from '../types/game';
 import type { JourneyState, NpcMemory } from '../types/journey';
-import { relationshipFor } from './relationships';
+import { relationshipFor, unresolvedMeetingAbsence } from './relationships';
 import { getAffectionStage } from './gameEngine';
 import {
   awaitsHerbApology,
@@ -28,6 +28,7 @@ export type DialogueChoice = {
     | 'exchange' | 'greet' | 'agenda' | 'past' | 'private' | 'respect' | 'press' | 'topics'
     | 'herb' | 'promise' | 'decline' | 'apology' | 'investigate' | 'detour' | 'visit' | 'topic';
   topic?: CharacterChatOption;
+  absenceId?: string;
   lockReason?: string;
 };
 
@@ -137,6 +138,12 @@ export function openConversation({ character, runtime, player, journey }: Dialog
       ? '林婉儿看见你搭在膝上的手一直没松开。「先别说话。哪里疼，你指给我看。」'
       : line);
   }
+  const missedMeeting = unresolvedMeetingAbsence(journey, character.id);
+  const owesHerbApology = character.id === HERBALIST && awaitsHerbApology(journey);
+  const missedSubject = missedMeeting?.detail.match(/「([^」]+)」/u)?.[1] ?? '上回约好的事';
+  if (missedMeeting && !owesHerbApology) {
+    line = `「上回约好谈『${missedSubject}』，我等到第二天也没见你。路上出什么事了？」`;
+  }
 
   const choices: DialogueChoice[] = [];
   if (nearby && !runtime.hasContact) choices.push({ action: 'exchange', label: '询问能否留下传音印记' });
@@ -150,8 +157,10 @@ export function openConversation({ character, runtime, player, journey }: Dialog
       journey.day <= (journey.herb.meetingDay ?? 0)) {
     choices.push({ action: 'decline', label: '提前告诉她，你有事赶不过去' });
   }
-  const owesApology = character.id === HERBALIST && awaitsHerbApology(journey);
-  if (owesApology) choices.push({ action: 'apology', label: '为那日失约向她道歉' });
+  if (owesHerbApology) choices.push({ action: 'apology', label: '为采药那日失约向她道歉' });
+  else if (missedMeeting) choices.push({
+    action: 'apology', label: `为错过「${missedSubject}」的约向她道歉`, absenceId: missedMeeting.id,
+  });
   choices.push({ action: 'agenda', label: '问她最近在忙什么' });
   if (profile) choices.push({ action: 'private', label: profile.privateTopic.question });
   if (character.chatOptions?.length) choices.push({ action: 'topics', label: '聊聊她擅长的道法' });
@@ -159,7 +168,7 @@ export function openConversation({ character, runtime, player, journey }: Dialog
     choices.push({ action: 'past', label: '说起你们从前的事' });
   }
   const visitedBefore = memories.some((memory) => memory.id.startsWith(`event:visit_${character.id}:`));
-  if (nearby && runtime.affection >= 25 && !owesApology && !visitedBefore && status?.canIntervene && status.interveneType !== 'rescue' &&
+  if (nearby && runtime.affection >= 25 && !owesHerbApology && !missedMeeting && !visitedBefore && status?.canIntervene && status.interveneType !== 'rescue' &&
       character.proactiveVisitEvents?.length) {
     choices.push({ action: 'visit', label: '应她的邀请，坐下来叙谈' });
   }
@@ -215,7 +224,7 @@ export function chooseDialogue(
     }
     case 'private': {
       if (!profile) return result(runtime.lastSpokenLine);
-      const confidence = memories.find((memory) => memory.kind === 'confidence');
+      const confidence = memories.find((memory) => memory.id === 'private-boundary' && memory.kind === 'confidence');
       if (confidence) {
         return result(journey.day > confidence.day ? profile.privateTopic.trusted : profile.privateTopic.respect);
       }
@@ -230,6 +239,7 @@ export function chooseDialogue(
     case 'respect':
     case 'press': {
       if (!profile) return result(runtime.lastSpokenLine);
+      if (memories.some(memory => memory.id === 'private-boundary')) return result(runtime.lastSpokenLine);
       const respect = choice.action === 'respect';
       const next = result(respect ? profile.privateTopic.respect : profile.privateTopic.press, respect ? [back] : []);
       return {
@@ -317,13 +327,26 @@ export function chooseDialogue(
         journey: refreshNpcAgendas(next),
       };
     }
-    case 'apology':
+    case 'apology': {
+      if (choice.absenceId) {
+        const missed = unresolvedMeetingAbsence(journey, character.id);
+        if (!missed || missed.id !== choice.absenceId) return result('「这件事已经说开了。」');
+        return {
+          ...result('「那天我确实有些生气。你今天肯来说明白，我听进去了。下回若赶不过来，给我留个口信吧。」'),
+          journey: rememberNpc(journey, character.id, {
+            id: missed.id + ':apology', kind: 'apology',
+            detail: `你为失约向${character.name}道歉，她接受了你的解释。上次的约定：${missed.detail}`,
+          }),
+        };
+      }
+      if (character.id !== HERBALIST || !awaitsHerbApology(journey)) return result('「这件事已经说开了。」');
       return {
         ...result('她听到一半才轻轻应了一声。「我在意的是白白等了一天。你肯说清楚，这件事就放过去吧。」'),
         journey: rememberNpc(journey, character.id, {
           id: 'herb-apology', kind: 'apology', detail: '你为采药失约道歉，并答应再有变动会事先传信。',
         }),
       };
+    }
     case 'investigate':
     case 'detour': {
       if (!canTakeHerbTrip(journey)) return result('「炉火还没收。山涧那边先别急着去。」');
@@ -349,7 +372,6 @@ export function chooseDialogue(
 
 const spokenIntents: [DialogueChoice['action'], RegExp][] = [
   ['exchange', /留.{0,4}(玉简|传音|印记)|交换.{0,3}玉简/],
-  ['apology', /抱歉|对不起|赔个不是|失约.{0,6}错|我来道歉/],
   ['decline', /去不了|来不了|赶不过|没空|不便前往|不能.{0,5}(去|同[行去]|赴约|作陪)|不想(去|答应)|不赴约/],
   ['respect', /不追问|不多问|你愿意.{0,6}(说|讲)|想说.{0,5}(再说|告诉)|等你.{0,6}(愿意|想说)/],
   ['press', /非说不可|你必须说|现在.{0,3}(告诉我|给我答复)|非要.{0,4}(知道|听清)/],
@@ -368,7 +390,6 @@ const spokenIntents: [DialogueChoice['action'], RegExp][] = [
 const directDecisions: Partial<Record<DialogueChoice['action'], RegExp>> = {
   promise: /^(好[，,。！!]?|嗯[，,。！!]?)?(我(?:答应|会赴约|愿意同行|会去|定会去|可以同行|一定来)|到时.{0,6}(?:见|来)|我来陪你)/,
   decline: /^(抱歉[，,。！!]?)?(我(?:这趟|那天|这次)?(?:去不了|来不了|赶不过|没空|不便前往|不能.{0,5}(?:去|同行|赴约)|不赴约)|这趟(?:去|来)不了)/,
-  apology: /^(抱歉|对不起|我来道歉|那[日天].{0,8}(?:抱歉|对不起|是我不对)).*(?:失约|没来|没赴约)|^我为.{0,10}失约.{0,6}道歉/,
   investigate: /^(我|我们|咱们)?(?:先|留下)?(?:查清|查查|查一查|留下看看|先去看看)/,
   detour: /^(我|我们|咱们)?(?:先)?(?:从后坡绕|走后坡|绕[行路道])/,
 };
@@ -378,6 +399,11 @@ export function matchDialogueInput(text: string, node: DialogueNode, exactOrDeci
   const unlocked = node.choices.filter((choice) => !choice.lockReason);
   const exact = unlocked.find((choice) => choice.label.normalize('NFKC').replace(/\s/g, '') === written);
   if (exact) return exact;
+  const apology = unlocked.find(choice => choice.action === 'apology');
+  if (apology && /抱歉|对不[起住]|赔个不是|是我(?:不对|的错)|我(?:来|向你|给你)道歉|失约.{0,4}道歉/u.test(written) &&
+      !/[?「」“”]|如果|要是|没什么好|不(?:会|想|肯|必|用).{0,3}(?:道歉|赔)|(?:你|他|她)(?:该|应该|得|要)?(?:说|道歉|失约|赔个不是)/u.test(written) &&
+      (/^(?:真的|实在)?(?:抱歉|对不起|我来道歉|我给你赔个不是)[。!,]*$/u.test(written) ||
+        /失约|爽约|没(?:能)?来|没(?:能)?赶[到上]|没(?:去|能)?赴约|让你(?:白等|久等)/u.test(written))) return apology;
   if (exactOrDecision) {
     if (/[?「」“”]/.test(written)) return undefined;
     return unlocked.find(({ action }) => directDecisions[action]?.test(written) &&

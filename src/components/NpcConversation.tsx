@@ -114,6 +114,9 @@ export function NpcConversation({
             className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-4 py-4 sm:px-5">
             {turns.map((turn, index) => (
               <div key={index} className="space-y-2">
+                {turn.day !== undefined && turns[index - 1]?.day !== turn.day && (
+                  <p className="text-center text-xs text-stone-400">第 {turn.day} 日</p>
+                )}
                 <ChatBubble speaker={turn.role === 'user' ? '你' : character.name}
                   text={turn.content} player={turn.role === 'user'} />
                 {turn.note && <p className="break-words text-center text-xs leading-5 text-[#e2c488]">{turn.note}</p>}
@@ -146,7 +149,7 @@ export function NpcConversation({
               </details>
             )}
             {error && <p role="alert" className="my-2 text-sm text-amber-200">{error}</p>}
-            {unheard && <p role="status" className="my-2 text-xs text-stone-300">可以问候、问行程，或从剧情选项里选一句。载入 AI 后就能直接聊。</p>}
+            {unheard && <p role="status" className="my-2 text-xs text-stone-300">她没听明白。可以提一件具体的事，比如「后天在这里见面好吗？」</p>}
             {busy && (
               <div className="flex items-center justify-between gap-2 text-xs text-stone-300">
                 <span role="status">{character.name}正在回复…</span>
@@ -174,7 +177,7 @@ export function NpcConversation({
                     event.preventDefault();
                     event.currentTarget.form?.requestSubmit();
                   }}
-                  placeholder={modelName ? `跟${character.name}说点什么…` : '可以问候，也可以问她的行程…'}
+                  placeholder={modelName ? `跟${character.name}说点什么…` : '问行程、约见面，或托她记住一句话…'}
                   className="min-w-0 flex-1 resize-none rounded-lg border border-stone-600 bg-[#11141a] px-3 py-2 text-base text-stone-100 focus:border-[#e2c488] focus:outline-none"
                 />
                 <button type="submit" disabled={busy || loadingModel || !draft.trim()}

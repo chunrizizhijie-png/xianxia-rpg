@@ -12,10 +12,22 @@ export interface NpcRelationship {
   dualReason?: string;
 }
 
+export function unresolvedMeetingAbsence(journey: JourneyState, charId: string) {
+  const memories = journey.memories[charId] ?? [];
+  const answered = new Set(memories.filter(m => m.kind === 'apology').map(m => m.id));
+  return [...memories].reverse().find(m =>
+    m.kind === 'absence' && m.id.endsWith(':missed') && !answered.has(m.id + ':apology'));
+}
+
 export function relationshipFor(journey: JourneyState, charId: string, runtime?: CharacterRuntimeState): NpcRelationship {
   if (!runtime?.met) return { label: '素未谋面', inviteReason: '先当面结识', dualReason: '先当面结识' };
   const memories = journey.memories[charId] ?? [];
-  const trust = memories.reduce((sum, memory) => sum + (trustWeight[memory.kind] ?? 0), 0);
+  const apologies = new Set(memories.filter(m => m.kind === 'apology').map(m => m.id));
+  const trust = memories.reduce((sum, memory) => {
+    // An accepted apology settles just the appointment that prompted it.
+    if (memory.kind === 'absence' && memory.id.endsWith(':missed') && apologies.has(memory.id + ':apology')) return sum;
+    return sum + (trustWeight[memory.kind] ?? 0);
+  }, 0);
   const explainedAbsence = memories.some((memory) => memory.id === 'herb-apology');
   const standing = trust + (explainedAbsence ? 1 : 0);
   const hurt = charId === HERBALIST && awaitsHerbApology(journey);
