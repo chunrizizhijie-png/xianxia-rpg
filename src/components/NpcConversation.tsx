@@ -114,6 +114,9 @@ export function NpcConversation({
             className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-4 py-4 sm:px-5">
             {turns.map((turn, index) => (
               <div key={index} className="space-y-2">
+                {turn.day !== undefined && turns[index - 1]?.day !== turn.day && (
+                  <p className="text-center text-xs text-stone-400">第 {turn.day} 日</p>
+                )}
                 <ChatBubble speaker={turn.role === 'user' ? '你' : character.name}
                   text={turn.content} player={turn.role === 'user'} />
                 {turn.note && <p className="break-words text-center text-xs leading-5 text-[#e2c488]">{turn.note}</p>}
@@ -128,13 +131,13 @@ export function NpcConversation({
           </div>
           <div className="shrink-0 border-t border-[#c5a059]/20 px-3 pb-3 pt-1 sm:px-5">
             {node.choices.length > 0 && (
-              <details key={modelName ? 'ai' : 'story'} open={!modelName || undefined} className="group">
+              <details className="group">
                 <summary className="flex min-h-9 cursor-pointer list-none items-center gap-1.5 text-sm text-[#e2c488]">
-                  <ChevronDown aria-hidden="true" className="h-4 w-4 -rotate-90 group-open:rotate-0" /> 剧情选项
+                  <ChevronDown aria-hidden="true" className="h-4 w-4 -rotate-90 group-open:rotate-0" /> {node.choices.some(choice => choice.action === 'outing') ? '这时可以做什么' : '可选话题与行动'}
                 </summary>
                 <div className="mb-2 max-h-[22dvh] space-y-1.5 overflow-y-auto overscroll-contain pr-1">
                   {node.choices.map((choice) => (
-                    <button type="button" key={choice.topic?.id ?? choice.action}
+                    <button type="button" key={choice.outingId ?? choice.topic?.id ?? choice.absenceId ?? choice.action}
                       onClick={() => { atBottom.current = true; setUnheard(false); onChoose(choice); }}
                       disabled={busy || Boolean(choice.lockReason)}
                       className="block min-h-10 w-full rounded-md border border-[#c5a059]/25 bg-[#11141a] px-3 py-2 text-left text-sm text-stone-100 hover:border-[#e2c488] disabled:opacity-50">
@@ -146,7 +149,7 @@ export function NpcConversation({
               </details>
             )}
             {error && <p role="alert" className="my-2 text-sm text-amber-200">{error}</p>}
-            {unheard && <p role="status" className="my-2 text-xs text-stone-300">可以问候、问行程，或从剧情选项里选一句。载入 AI 后就能直接聊。</p>}
+            {unheard && <p role="status" className="my-2 text-xs text-stone-300">她没听明白。可以提一件具体的事，比如「后天在这里见面好吗？」</p>}
             {busy && (
               <div className="flex items-center justify-between gap-2 text-xs text-stone-300">
                 <span role="status">{character.name}正在回复…</span>
@@ -174,7 +177,7 @@ export function NpcConversation({
                     event.preventDefault();
                     event.currentTarget.form?.requestSubmit();
                   }}
-                  placeholder={modelName ? `跟${character.name}说点什么…` : '可以问候，也可以问她的行程…'}
+                  placeholder={`跟${character.name}说点什么…`}
                   className="min-w-0 flex-1 resize-none rounded-lg border border-stone-600 bg-[#11141a] px-3 py-2 text-base text-stone-100 focus:border-[#e2c488] focus:outline-none"
                 />
                 <button type="submit" disabled={busy || loadingModel || !draft.trim()}

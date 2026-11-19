@@ -95,7 +95,7 @@ export function createStoryPrompt(
   const fortune = die + Math.min(20, player.luck) > 85 ? '稍顺' : die < 28 ? '稍有阻碍' : '平常';
   const history = sceneRecords(journey, scene.history, actor?.id).slice(-4)
     .map((entry) => `第${entry.day}日，${entry.fact || entry.text}`.slice(0, 170));
-  const pending = sceneRecords(journey, scene.pending.filter((entry) => !entry.npcTask), actor?.id).slice(0, 4)
+  const pending = sceneRecords(journey, scene.pending.filter(isRevisableStory), actor?.id).slice(0, 4)
     .map((entry, index) => `编号${index + 1}，第${entry.day}日：${entry.text}`.slice(0, 145));
   const memory = actor ? (journey.memories[actor.id] ?? []).slice(-4).map((entry) =>
     `第${entry.day}日：${entry.detail}`.slice(0, 150)) : [];
@@ -126,6 +126,10 @@ export function createStoryPrompt(
     几日后: pending,
   };
   return `【背景事实】\n${JSON.stringify(facts)}\n\n【此刻玩家的新动作】\n${JSON.stringify(action)}\n接住这个新动作，写下一步。旧事只供判断。`;
+}
+
+function isRevisableStory(record: StoryRecord) {
+  return !record.npcTask && record.action !== 'outing-letter';
 }
 
 export function applyStoryOutcome(
@@ -203,7 +207,7 @@ export function applyStoryOutcome(
       break;
     }
     case 'revise': {
-      const related = sceneRecords(journey, scheduled.filter((entry) => !entry.npcTask), charId).slice(0, 4);
+      const related = sceneRecords(journey, scheduled.filter(isRevisableStory), charId).slice(0, 4);
       const original = related[outcome.value - 1];
       if (original) {
         scheduled = scheduled.filter((entry) => entry.id !== original.id);
@@ -239,27 +243,79 @@ export function applyStoryOutcome(
   return { player: nextPlayer, journey: nextJourney, days, record, effects };
 }
 
-export function settleStoryFollowups(journey: JourneyState): { journey: JourneyState; due: StoryRecord[] } {
+function meetingRecord(plan: StoryRecord, outcome: string, day: number, text: string): StoryRecord {
+  return { id: `${plan.id}:${outcome}`, day, regionId: plan.regionId, charId: plan.charId, text };
+}
+
+/** Called when the player actually opens an in-person conversation. */
+export function attendNpcMeeting(journey: JourneyState, character: CharacterData):
+  { journey: JourneyState; entry?: StoryRecord; greeting?: string } {
   const story = journey.openStory;
-  const due = story?.pending.filter((entry) => entry.day <= journey.day).sort((a, b) => a.day - b.day)
-    .map((entry) => {
-      if (entry.npcTask?.kind !== 'meet' || !entry.charId || canKeepNpcMeeting(journey, entry.charId, entry.day)) return entry;
-      return { ...entry, npcTask: undefined, text: `你收到一封迟来的传音：原定在${regionName(entry.regionId)}谈「${entry.npcTask.subject}」的约见因对方临时有事搁下了。` };
-    }) ?? [];
-  if (!story || due.length === 0) return { journey, due };
-  let next: JourneyState = {
+  const status = journey.npcStatuses[character.id];
+  const plan = story?.pending.find(record => record.charId === character.id && record.npcTask?.kind === 'meet' &&
+    record.regionId === journey.regionId && record.day <= journey.day && journey.day <= record.day + 1);
+  if (!plan?.npcTask || !story || status?.regionId !== plan.regionId ||
+      !canKeepNpcMeeting(journey, character.id, journey.day)) return { journey };
+  const subject = plan.npcTask.subject;
+  const casual = subject === '当面叙谈';
+  const entry = meetingRecord(plan, 'kept', journey.day,
+    `你在约好的日子来到${regionName(plan.regionId)}，${casual ? '见到了等候的' + character.name : '与' + character.name + '见面谈起「' + subject + '」'}。`);
+  const next = rememberNpc({
     ...journey,
-    openStory: {
-      ...story,
-      history: [...story.history, ...due],
-      pending: story.pending.filter((entry) => entry.day > journey.day),
-    },
-  };
-  for (const entry of due) {
-    if (entry.charId) {
-      next = rememberNpc(next, entry.charId, { id: entry.id, kind: 'story', detail: entry.text }, entry.day);
-      if (entry.npcTask) next = deliverNpcLetter(next, entry.charId, entry);
+    npcStatuses: { ...journey.npcStatuses, [character.id]: {
+      ...status, activityKey: `npc-visited:${plan.id}`, activityText: casual ? '依约留在这里陪你走走' : `与你赴约谈「${subject}」`,
+      canIntervene: false, availableUntilDay: journey.day,
+    } },
+    openStory: { ...story, pending: story.pending.filter(record => record.id !== plan.id),
+      history: [...story.history, entry] },
+  }, character.id, { id: entry.id, kind: 'confidence', detail: entry.text });
+  return { journey: next, entry, greeting: casual ? '「你来了。走，一起逛逛。」' : `「你来了。上回约好谈的『${subject}』，我们坐下细说。」` };
+}
+
+export function settleStoryFollowups(journey: JourneyState, characters: CharacterData[] = []):
+  { journey: JourneyState; due: StoryRecord[] } {
+  const story = journey.openStory;
+  if (!story) return { journey, due: [] };
+  const pending: StoryRecord[] = [];
+  const notices: { record: StoryRecord; absence?: boolean; letter?: boolean }[] = [];
+  for (const plan of story.pending) {
+    if (plan.day > journey.day) { pending.push(plan); continue; }
+    const task = plan.npcTask;
+    if (task?.kind !== 'meet' || !plan.charId) {
+      notices.push({ record: plan, letter: task?.kind === 'inquire' || plan.action === 'outing-letter' });
+      continue;
     }
+
+    const name = characters.find(c => c.id === plan.charId)?.name ?? '对方';
+    const until = plan.day + 1;
+    const lastWaitingDay = Math.min(until, journey.day);
+    const firstWaitingDay = task.arrived ? lastWaitingDay : plan.day;
+    const interruptedDay = [firstWaitingDay, lastWaitingDay].find(day => !canKeepNpcMeeting(journey, plan.charId!, day));
+    if (!task.arrived && interruptedDay !== plan.day) {
+      notices.push({ record: meetingRecord(plan, 'arrived', plan.day, plan.text), letter: true });
+    }
+    if (interruptedDay !== undefined) {
+      notices.push({ record: meetingRecord(plan, 'interrupted', interruptedDay,
+        `${name}临时有事抽不开身，来信请你改日再到${regionName(plan.regionId)}谈「${task.subject}」。`), letter: true });
+      continue;
+    }
+    if (journey.day <= until) {
+      pending.push(task.arrived ? plan : { ...plan, npcTask: { ...task, arrived: true } });
+    } else {
+      notices.push({ record: meetingRecord(plan, 'missed', until + 1,
+        `${name}在${regionName(plan.regionId)}等到第 ${until} 日也没见到你。「${task.subject}」这一次只好作罢。`),
+        absence: true, letter: true });
+    }
+  }
+  if (!notices.length) return { journey, due: [] };
+  // Closing a long retreat can deliver multiple letters with different original dates.
+  notices.sort((a, b) => a.record.day - b.record.day);
+  const due = notices.map(notice => notice.record);
+  let next: JourneyState = { ...journey, openStory: { ...story, history: [...story.history, ...due], pending } };
+  for (const { record, absence, letter } of notices) {
+    if (!record.charId) continue;
+    next = rememberNpc(next, record.charId, { id: record.id, kind: absence ? 'absence' : 'story', detail: record.text }, record.day);
+    if (letter) next = deliverNpcLetter(next, record.charId, record);
   }
   return { journey: next, due };
 }

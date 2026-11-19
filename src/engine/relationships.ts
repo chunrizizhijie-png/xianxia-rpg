@@ -12,16 +12,32 @@ export interface NpcRelationship {
   dualReason?: string;
 }
 
+export function unresolvedMeetingAbsence(journey: JourneyState, charId: string) {
+  const memories = journey.memories[charId] ?? [];
+  const answered = new Set(memories.filter(m => m.kind === 'apology').map(m => m.id));
+  return [...memories].reverse().find(m =>
+    m.kind === 'absence' && m.id.endsWith(':missed') && !answered.has(m.id + ':apology'));
+}
+
 export function relationshipFor(journey: JourneyState, charId: string, runtime?: CharacterRuntimeState): NpcRelationship {
   if (!runtime?.met) return { label: '素未谋面', inviteReason: '先当面结识', dualReason: '先当面结识' };
   const memories = journey.memories[charId] ?? [];
-  const trust = memories.reduce((sum, memory) => sum + (trustWeight[memory.kind] ?? 0), 0);
+  const apologies = new Set(memories.filter(m => m.kind === 'apology').map(m => m.id));
+  const trust = memories.reduce((sum, memory) => {
+    // An accepted apology settles just the appointment that prompted it.
+    if (memory.kind === 'absence' && memory.id.endsWith(':missed') && apologies.has(memory.id + ':apology')) return sum;
+    return sum + (trustWeight[memory.kind] ?? 0);
+  }, 0);
   const explainedAbsence = memories.some((memory) => memory.id === 'herb-apology');
   const standing = trust + (explainedAbsence ? 1 : 0);
   const hurt = charId === HERBALIST && awaitsHerbApology(journey);
   const pressure = memories.some((memory) => memory.kind === 'pressure' && journey.day <= memory.day + 1);
+  const lastDemand = [...memories].reverse().find(memory => memory.id.startsWith('social:施压:') && memory.day <= journey.day);
+  const unresolvedDemand = lastDemand && journey.day - lastDemand.day <= 3 &&
+    !memories.some(memory => memory.id === 'social:致歉:' + lastDemand.id);
   const reservations = hurt ? '她想先谈谈你失约的那天'
     : pressure ? '她想先独处一阵'
+    : unresolvedDemand ? '她还介意你上次逼她表态'
     : standing < 0 ? '她对你还存着戒心' : undefined;
   const affection = runtime?.affection ?? 0;
   const established = runtime?.isSoulmate ?? false;
